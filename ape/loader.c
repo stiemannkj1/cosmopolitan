@@ -33,8 +33,11 @@
  * `ape/ape.S` bootloader embeds this binary inside each binary that's
  * linked using `$(APE_NO_MODIFY_SELF)` so it is an automated seamless
  * process. the shell script at the top of the .COM files will copy it
- * to `${TMPDIR:-${HOME:-.}}/.ape` and call execve(). It's a zero copy
- * operation in praxis since this payload uses mmap() to load the rest
+ * to `${TMPDIR:-${HOME:-.}}/.ape/ape-$VERSION` and call execve(). It's
+ * nested under a `.ape/` directory, rather than being a hidden dotfile
+ * itself, so hidden-file-execution heuristics in some EDR/AV products
+ * (e.g. CrowdStrike) don't flag it. It's a zero copy operation in
+ * praxis since this payload uses mmap() to load the rest
  * of your executable the same way the kernel does, based on ELF phdrs
  * which are located in accordance with the first sh printf statement.
  *

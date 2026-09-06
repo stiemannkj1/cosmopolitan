@@ -1966,11 +1966,15 @@ int main(int argc, char *argv[]) {
     }
 
     // otherwise try to use the ad-hoc self-extracted loader, securely
+    // (nested under a .ape/ directory rather than a hidden dotfile
+    // itself, since some EDR/AV products flag hidden top-level files
+    // executing but not normally-named files inside a hidden dir)
     if (loaders.n) {
-      p = stpcpy(p, "t=\"${TMPDIR:-${HOME:-.}}/.ape-" APE_VERSION_STR "\"\n"
-                    "[ x\"$1\" != x--assimilate ] && "
-                    "[ -x \"$t\" ] && "
-                    "exec \"$t\" \"$o\" \"$@\"\n");
+      p = stpcpy(p,
+                 "t=\"${TMPDIR:-${HOME:-.}}/.ape/ape-" APE_VERSION_STR "\"\n"
+                 "[ x\"$1\" != x--assimilate ] && "
+                 "[ -x \"$t\" ] && "
+                 "exec \"$t\" \"$o\" \"$@\"\n");
     }
 
     // otherwise this is a fresh install so consider the platform

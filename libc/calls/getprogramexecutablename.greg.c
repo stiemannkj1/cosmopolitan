@@ -88,9 +88,16 @@ static inline int AllNumDot(const char *s) {
 // old loaders do not pass __program_executable_name, so we need to
 // check for them when we use KERN_PROC_PATHNAME et al.
 static int OldApeLoader(char *s) {
-  char *b;
-  return !strcmp(s, "/usr/bin/ape") ||
-         (!strncmp((b = basename(s)), ".ape-", 5) && AllNumDot(b + 5));
+  char *b, *p;
+  if (!strcmp(s, "/usr/bin/ape")) return 1;
+  b = basename(s);
+  if (!strncmp(b, ".ape-", 5) && AllNumDot(b + 5)) return 1;  // old style
+  // new style: nested under a .ape/ directory rather than being a
+  // hidden dotfile itself (e.g. ".ape/ape-1.10"), since some EDR/AV
+  // products flag execution of hidden top-level files; see ape/ape.S
+  if ((p = strstr(s, "/.ape/ape-")) && AllNumDot(p + strlen("/.ape/ape-")))
+    return 1;
+  return 0;
 }
 
 static int CopyWithCwd(const char *q, char *p, char *e) {

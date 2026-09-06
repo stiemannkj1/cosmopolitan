@@ -609,8 +609,12 @@ apesh:	.ascii	"\n@\n#'\"\n"			// sixth edition shebang
 //	embedded inside the APE. So if the system is not MacOs,
 //	extract the loader into a temp folder, and use it to
 //	load the APE without modifying it.
+//	The loader is nested under a `.ape/` directory rather than being
+//	a hidden dotfile itself (e.g. `.ape-1.10`), since some EDR/AV
+//	products (e.g. CrowdStrike) flag execution of hidden top-level
+//	files but not normally-named files inside a hidden directory.
 	.ascii	  "[ x\"$1\" != x--assimilate ] && {\n"
-	.ascii	    "t=\"${TMPDIR:-${HOME:-.}}/.ape-"
+	.ascii	    "t=\"${TMPDIR:-${HOME:-.}}/.ape/ape-"
 	.ascii	     APE_VERSION_STR
 	.ascii	     "\"\n"
 	.ascii	    "[ -x \"$t\" ] || {\n"

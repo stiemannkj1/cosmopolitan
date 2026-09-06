@@ -49,9 +49,9 @@ fi
 # legacy installations
 rm -f o/tmp/ape /tmp/ape "${TMPDIR:-/tmp}/ape"
 
-# ad-hoc installations
-for x in .ape \
-         .ape-1.1 \
+# ad-hoc installations (old style: a hidden dotfile itself, one per
+# version, e.g. ~/.ape-1.10)
+for x in .ape-1.1 \
          .ape-1.3 \
          .ape-1.4 \
          .ape-1.5 \
@@ -66,3 +66,13 @@ for x in .ape \
      o/tmp/$x \
      "${TMPDIR:-/tmp}/$x"
 done
+
+# ad-hoc installations (new style: nested under a .ape/ directory
+# rather than being a hidden dotfile itself, since some EDR/AV
+# products flag execution of hidden top-level files; see ape/ape.S).
+# -rf (not -f) since ~/.ape is now a directory, not a plain file.
+rm -rf \
+   ~/.ape \
+   /tmp/.ape \
+   o/tmp/.ape \
+   "${TMPDIR:-/tmp}/.ape"

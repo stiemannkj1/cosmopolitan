@@ -552,13 +552,18 @@ void ApplyFilesystemPolicy(unsigned long ipromises) {
   if (GetStrategy() == kStrategyApe) {
     if (UnveilIfExists("/usr/bin/ape", "rx") == -1) {
       char buf[PATH_MAX];
+      // nested under .ape/ (rather than being the hidden dotfile
+      // itself) so hidden-file-execution heuristics in some EDR/AV
+      // products don't flag it; see ape/ape.S
       if ((p = getenv("TMPDIR"))) {
         UnveilIfExists(
-            __join_paths(buf, sizeof(buf), p, ".ape-" APE_VERSION_STR), "rx");
+            __join_paths(buf, sizeof(buf), p, ".ape/ape-" APE_VERSION_STR),
+            "rx");
       }
       if ((p = getenv("HOME"))) {
         UnveilIfExists(
-            __join_paths(buf, sizeof(buf), p, ".ape-" APE_VERSION_STR), "rx");
+            __join_paths(buf, sizeof(buf), p, ".ape/ape-" APE_VERSION_STR),
+            "rx");
       }
     }
   }
