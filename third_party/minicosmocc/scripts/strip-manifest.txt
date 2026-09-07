@@ -14,7 +14,13 @@ Current staged layout (build/):
               arm64-native copy was also staged originally, then dropped for
               the same reason as gcc-arm64-on-amd64/ below -- Blink already
               runs the amd64-native copy on arm64 hosts), plus the ape-*.elf
-              loader stubs
+              loader stubs. apelink and the ape-x86_64.elf/ape-aarch64.elf
+              loader stubs are built from this repo's own local source
+              (not the prebuilt cosmocc release) so that every program the
+              wrapper compiles gets the current ape-loader-path behavior
+              (see SUMMARY.md, "Locally-built apelink + ape loader", for
+              why and for the two bugs found and worked around getting
+              there). fixupobj/pecheck remain prebuilt.
   blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
               code -- see below for why no blink-amd64.elf is needed; vendored
               as a prebuilt binary, see vendor/ -- no upstream prebuilt release

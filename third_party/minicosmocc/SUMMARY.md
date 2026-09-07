@@ -2,16 +2,20 @@
 
 Single standalone APE binary, `dist/blink-compile.com` (currently **72 MB**),
 that compiles C source into fat (amd64+arm64 native) APE executables. Built
-on the prebuilt `cosmocc` 4.0.2 release (never built from source), stripped
-to C-only, and packaged so the wrapper carries its own toolchain as embedded
-assets.
+on the prebuilt `cosmocc` 4.0.2 release, stripped to C-only, and packaged so
+the wrapper carries its own toolchain as embedded assets. The GCC toolchain
+(`cc1`/`as`/`ld.bfd`) is never built from source; `apelink` and the ape
+loader stubs are the one exception, built from this repo's own local
+source so compiled output picks up the current ape-loader-path fix — see
+"Locally-built apelink + ape loader" below.
 
 Original plan lives at `../../MINIMAL_COSMO_COMPILER_GCC_PLAN.md` (relative
 to this file) and called for two binaries (`blink-compile` / `blink-embed`);
 Binary B was designed, built, and then deliberately dropped (see below).
 Only Binary A remains. This project now lives under
-`cosmopolitan/third_party/minicosmocc/` on the `minicosmocc` branch (moved
-from a standalone `~/Projects/work/cosmo-toolchain/` working directory).
+`cosmopolitan/third_party/minicosmocc/` on the `minicosmocc-4.0.2` branch
+(moved from a standalone `~/Projects/work/cosmo-toolchain/` working
+directory, then rebased directly onto the `4.0.2` release tag).
 
 ## Current status: all phases complete
 
@@ -259,8 +263,65 @@ binary (`vendor/blink-arm64.elf`) rather than built from source, since
 upstream ships no prebuilt aarch64 release asset and this host has no
 aarch64 cross-compiler to build it with.
 
+## Locally-built apelink + ape loader (EDR/CrowdStrike loader-path fix)
+
+The monorepo this project lives in carries a fix (commit "Nest ape loader
+self-extraction under .ape/ to avoid EDR blocking", `APE_LOADER_HIDDEN_FILE_WORKAROUND.md`)
+that moves the ad-hoc APE loader cache path from a hidden top-level dotfile
+(`~/.ape-$VERSION`, flagged by some EDR/AV products including CrowdStrike)
+to a normally-named file inside a hidden directory (`~/.ape/ape-$VERSION`).
+The prebuilt `cosmocc-4.0.2` release predates this fix, so a prebuilt
+`apelink` always bakes the old path into whatever it links. `apelink` and
+the `ape-x86_64.elf`/`ape-aarch64.elf` loader stubs are therefore built
+from this repo's own local source (`scripts/stage-toolchain.sh` step 4,
+via `.cosmocc/current/bin/make MODE=x86_64|aarch64`) instead of taken
+from the release — the only two pieces of the toolchain not sourced from
+the prebuilt release; `cc1`/`as`/`ld.bfd`/`fixupobj`/`pecheck` still are.
+
+Two distinct bugs surfaced and were resolved while getting here, both
+now moot on this branch (rebased directly onto the `4.0.2` tag, so the
+only diff from the release is the loader-path fix itself and this
+project's own commits):
+
+- **A Wine absolute-path regression**, present in the pre-rebase branch
+  (many unrelated commits ahead of `4.0.2`) but reproducible even at the
+  commit *before* the loader-path fix — confirmed unrelated to it, and
+  it disappeared entirely once the branch was rebased directly onto
+  `4.0.2`. No code change was needed; it was a transient side effect of
+  building against a HEAD far ahead of the pinned release.
+- **A corrupt self-extraction payload in the wrapper binary itself**,
+  found after rebasing: using the locally-built `apelink` for the
+  bootstrap step that links `cosmocc-min.c` into `dist/blink-compile.com`
+  produces a wrapper whose own embedded loader payload is truncated
+  (deterministic `gzip: stdin: unexpected end of file` on every fresh
+  `~/.ape` state). This is narrower and specific to a locally-built
+  `apelink` joining a binary that embeds itself as its own loader
+  payload — it doesn't affect ordinary compiled output. Fixed by keeping
+  the *bootstrap* step's `apelink` on the prebuilt release (`_assemble.sh`),
+  while `stage-toolchain.sh` still embeds the locally-built `apelink` as
+  the runtime asset used to link every program the wrapper compiles.
+
+Net effect: **every program compiled by `dist/blink-compile.com` self-extracts
+to the new `~/.ape/ape-$VERSION` path**; `dist/blink-compile.com` itself still
+self-extracts to the old `~/.ape-$VERSION` path (confirmed via `strings` on
+both). Closing that last gap would mean root-causing the gzip-corruption bug
+above rather than working around it — left as a known limitation below.
+
+Validated via `scripts/rebuild-from-scratch.sh` end to end (wipe `build/`
+and `dist/`, re-stage, rebuild, full test suite) and by directly
+inspecting the embedded loader-path strings in both the wrapper binary
+and a compiled test program: **19/19 checks passing**, stable across
+repeated runs, including the wrapper's own self-extraction retried
+several times from a freshly-removed `~/.ape` state.
+
 ## Known limitations / next steps
 
+- The wrapper binary (`dist/blink-compile.com`) itself still self-extracts
+  to the old `~/.ape-$VERSION` path rather than the new `~/.ape/ape-$VERSION`
+  one (see previous section) — only programs it compiles get the new path.
+  Root-causing the gzip-corruption bug that blocks using the locally-built
+  `apelink` for the wrapper's own bootstrap link is the concrete follow-up
+  if the wrapper binary itself also needs to avoid the old path.
 - Blink (`vendor/blink-arm64.elf`) is a pinned, vendored prebuilt binary,
   not something `stage-toolchain.sh` builds from source: jart/blink's
   GitHub releases ship only a source tarball (no prebuilt aarch64 asset),

@@ -59,6 +59,21 @@ assemble() {
   done
   # apelink/fixupobj/pecheck: same story, assimilate to plain ELF for
   # bootstrap use (the bootstrap always runs on this amd64 build host).
+  #
+  # This apelink is used ONLY to link the wrapper binary itself into its
+  # final APE form (below) -- it always comes from the prebuilt cosmocc
+  # release, not $BUILD's locally-built copy. Using the locally-built
+  # one here was tried and reverted: joining the wrapper's OWN slices
+  # with it produced a wrapper whose self-extraction shell script embeds
+  # a corrupt gzip payload (deterministic "gzip: stdin: unexpected end
+  # of file" on every fresh ~/.ape state) -- a distinct bug from the
+  # Wine absolute-path one, specific to a locally-built apelink joining
+  # a binary that embeds itself as its own loader payload. The prebuilt
+  # apelink doesn't have this problem, so the wrapper binary itself
+  # keeps self-extracting to the old ~/.ape-$VERSION path; only the
+  # programs it goes on to compile (linked with the locally-built
+  # apelink embedded as a runtime asset in step 4 of stage-toolchain.sh)
+  # get the new ~/.ape/ape-$VERSION path.
   mkdir -p "$bootstrap_assets/apelink"
   cp "$BUILD/apelink/ape-x86_64.elf" "$BUILD/apelink/ape-aarch64.elf" "$BUILD/apelink/ape-m1.c" "$bootstrap_assets/apelink/"
   for tool in apelink fixupobj pecheck; do

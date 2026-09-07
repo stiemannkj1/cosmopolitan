@@ -2,21 +2,29 @@
 # Stages build/ from scratch: downloads (or reuses a cached) cosmocc
 # release, assimilates every dual-arch tool to an amd64-native view with
 # the zero+trim technique (see zero-trim.py), copies the filtered lib/
-# and include/ trees, and installs the vendored Blink binary.
+# and include/ trees, builds apelink + the ape loader from local source,
+# and installs the vendored Blink binary.
 #
 # This is the "Source" step described in scripts/strip-manifest.txt,
 # fully automated. Re-run after a cosmocc version bump (set
 # COSMOCC_VERSION) to re-derive build/ from the new release; the
 # zero+trim math is re-measured from the fresh binaries each time, not
 # hardcoded to today's offsets.
+#
+# Requires the full cosmopolitan monorepo checkout (not just this
+# third_party/minicosmocc directory): apelink and the ape-*.elf loader
+# stubs are built from local source rather than the prebuilt cosmocc
+# release, so that binaries this project's wrapper produces get the
+# current ape-loader behavior (see step 4 below for why).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD="$ROOT/build"
+MONOREPO="$(cd "$ROOT/../.." && pwd)"
 
 COSMOCC_VERSION="${COSMOCC_VERSION:-4.0.2}"
-COSMOCC_STORE="$(cd "$ROOT/../.." && pwd)/.cosmocc"
+COSMOCC_STORE="$MONOREPO/.cosmocc"
 COSMOCC="$COSMOCC_STORE/$COSMOCC_VERSION"
 ZERO_TRIM="$SCRIPT_DIR/zero-trim.py"
 
@@ -101,15 +109,46 @@ done
 
 # ---------------------------------------------------------------------
 # 4. apelink / fixupobj / pecheck: amd64-native only (both host arches
-#    are served by Blink dispatch on arm64 -- see cosmocc-min.c), plus
-#    the ape-*.elf/.macho loader-stub data files, copied verbatim.
+#    are served by Blink dispatch on arm64 -- see cosmocc-min.c).
+#
+#    apelink and the ape-*.elf loader stubs are built from THIS repo's
+#    local source (via the monorepo's own `make`, bootstrapped by the
+#    same cosmocc release) rather than taken from the prebuilt cosmocc
+#    release. This is deliberate: the prebuilt cosmocc-4.0.2 release
+#    predates the "nest ape loader self-extraction under .ape/" fix
+#    (see ../../APE_LOADER_HIDDEN_FILE_WORKAROUND.md), so a prebuilt
+#    apelink would bake the old, EDR-flagged ~/.ape-$VERSION path into
+#    every binary this project's wrapper produces. fixupobj/pecheck are
+#    unrelated to that fix and still come from the prebuilt release, per
+#    the project's general rule of using prebuilt cosmocc binaries
+#    wherever local source isn't specifically required. ape-m1.c/
+#    ape-x86_64.macho (macOS support) are also still taken from the
+#    prebuilt release: this project doesn't test or target macOS, and
+#    the loader-path fix doesn't touch the Mach-O path.
 # ---------------------------------------------------------------------
-echo "==> [apelink] assimilating apelink/fixupobj/pecheck to amd64-native + zero-trim"
-for tool in apelink fixupobj pecheck; do
+MAKE="$COSMOCC_STORE/current/bin/make"
+if [ ! -f "$MONOREPO/tool/build/apelink.c" ]; then
+  echo "error: $MONOREPO/tool/build/apelink.c not found -- building apelink" \
+       "and the ape loader from source requires the full cosmopolitan" \
+       "monorepo checkout, not just this third_party/minicosmocc directory." >&2
+  exit 1
+fi
+echo "==> building apelink + ape loader (ape.elf, x86_64 and aarch64) from local source"
+( cd "$MONOREPO" && "$MAKE" MODE=x86_64 -j"$(nproc)" \
+    o/x86_64/tool/build/apelink o/x86_64/ape/ape.elf )
+( cd "$MONOREPO" && "$MAKE" MODE=aarch64 -j"$(nproc)" o/aarch64/ape/ape.elf )
+
+cp "$MONOREPO/o/x86_64/tool/build/apelink" "$BUILD/apelink/apelink-amd64"
+python3 "$ZERO_TRIM" single "$BUILD/apelink/apelink-amd64"
+cp "$MONOREPO/o/x86_64/ape/ape.elf" "$BUILD/apelink/ape-x86_64.elf"
+cp "$MONOREPO/o/aarch64/ape/ape.elf" "$BUILD/apelink/ape-aarch64.elf"
+
+echo "==> [apelink] assimilating fixupobj/pecheck to amd64-native + zero-trim"
+for tool in fixupobj pecheck; do
   "$COSMOCC/bin/assimilate" -x -o "$BUILD/apelink/${tool}-amd64" "$COSMOCC/bin/$tool"
   python3 "$ZERO_TRIM" fat "$COSMOCC/bin/$tool" "$BUILD/apelink/${tool}-amd64" "$COSMOCC"
 done
-for f in ape-x86_64.elf ape-aarch64.elf ape-m1.c ape-x86_64.macho; do
+for f in ape-m1.c ape-x86_64.macho; do
   cp "$COSMOCC/bin/$f" "$BUILD/apelink/$f"
 done
 
