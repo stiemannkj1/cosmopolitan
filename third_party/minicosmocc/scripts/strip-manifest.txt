@@ -53,6 +53,26 @@ re-validated the full build + arm64/Blink-dispatch test suite again.
 Total: 208.2MB -> 103.7MB across the 17 affected files (saved 104.6MB).
 This was the single largest reduction of the whole size-trimming effort.
 
+CORRECTION (2026-09-07, found while fixing the wrapper's own bootstrap
+loader bug -- see SUMMARY.md "Locally-built apelink + ape loader"): the
+above "truncate to last loadable segment" measurement is incomplete for
+any file that self-extracts via the external-loader mechanism
+(cc1/as/ld.bfd, and locally-built apelink/loader binaries). Those files
+store their OWN self-extraction payload as raw bytes referenced only by
+a `dd if="$o" skip=N count=M | gzip -dc` in their embedded shell script
+-- a range readelf's segment table has no idea about, sitting right
+after the last real ELF segment. Truncating purely by segment end
+silently deleted that payload; every zero-trimmed binary in this
+project only worked on a truly cold loader-cache state because
+something else (almost always the wrapper's own self-extraction,
+sharing the same cache path) happened to populate the cache first.
+zero-trim.py now also scans each file's own shell-script header for
+these `dd` extraction lines and never truncates below the furthest
+`skip+count` found, so the "50%/104.6MB" savings figure above is
+slightly optimistic (a few KB per binary now survives the trim that
+didn't before) but the technique and validation approach are otherwise
+unchanged.
+
 Both gcc-amd64/ and gcc-arm64/ are amd64-native (assimilated from the fat APE
 originals via `assimilate -x`), not just gcc-amd64/. There is no arm64-native
 GCC staged at all. cosmocc-min's resolve_tooldir() picks the tree by TARGET

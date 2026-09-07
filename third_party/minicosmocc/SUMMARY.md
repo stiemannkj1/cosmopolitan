@@ -278,50 +278,62 @@ via `.cosmocc/current/bin/make MODE=x86_64|aarch64`) instead of taken
 from the release — the only two pieces of the toolchain not sourced from
 the prebuilt release; `cc1`/`as`/`ld.bfd`/`fixupobj`/`pecheck` still are.
 
-Two distinct bugs surfaced and were resolved while getting here, both
-now moot on this branch (rebased directly onto the `4.0.2` tag, so the
-only diff from the release is the loader-path fix itself and this
-project's own commits):
+Three distinct bugs surfaced and were resolved while getting here:
 
 - **A Wine absolute-path regression**, present in the pre-rebase branch
   (many unrelated commits ahead of `4.0.2`) but reproducible even at the
-  commit *before* the loader-path fix — confirmed unrelated to it, and
-  it disappeared entirely once the branch was rebased directly onto
-  `4.0.2`. No code change was needed; it was a transient side effect of
-  building against a HEAD far ahead of the pinned release.
-- **A corrupt self-extraction payload in the wrapper binary itself**,
-  found after rebasing: using the locally-built `apelink` for the
-  bootstrap step that links `cosmocc-min.c` into `dist/blink-compile.com`
-  produces a wrapper whose own embedded loader payload is truncated
-  (deterministic `gzip: stdin: unexpected end of file` on every fresh
-  `~/.ape` state). This is narrower and specific to a locally-built
-  `apelink` joining a binary that embeds itself as its own loader
-  payload — it doesn't affect ordinary compiled output. Fixed by keeping
-  the *bootstrap* step's `apelink` on the prebuilt release (`_assemble.sh`),
-  while `stage-toolchain.sh` still embeds the locally-built `apelink` as
-  the runtime asset used to link every program the wrapper compiles.
+  commit *before* the loader-path fix — confirmed unrelated to it. It
+  disappeared entirely once the branch was rebased directly onto `4.0.2`;
+  no code change was needed, it was a transient side effect of building
+  against a HEAD far ahead of the pinned release.
+- **`zero-trim.py` was silently deleting real loader payloads** — the
+  actual root cause behind what first looked like a narrower "wrapper's
+  own bootstrap link" bug. Every `APE_NO_MODIFY_SELF` binary (`cc1`,
+  `as`, `ld.bfd`, and any locally-built `apelink`/loader) stores its
+  self-extraction payload as raw bytes referenced only by a `dd if="$o"
+  skip=N count=M | gzip -dc` in its own embedded shell script — a range
+  `readelf -lW`'s segment table knows nothing about, sitting right after
+  the last real ELF segment. `zero-trim.py` truncated to that segment
+  end, cutting the payload off entirely. Every zero-trimmed binary in
+  this project was, until this fix, only working on a truly cold
+  `~/.ape`/`~/.ape-$VERSION` state because *something else* (almost
+  always the wrapper's own self-extraction, sharing the same cache path)
+  happened to populate the loader cache first. That coincidence broke
+  the moment the wrapper switched to the *new* nested path while `cc1`/
+  `as`/`ld.bfd` (still prebuilt, unaffected by the loader-path fix) kept
+  needing the *old* flat one — no shared cache entry left to free-ride
+  on, so `cc1`'s own broken self-extraction was finally exposed as
+  `gzip: stdin: unexpected end of file` on every real compile.
+  Fixed `zero-trim.py` to scan each file's own shell-script header for
+  `dd if="$o" ... skip=N count=M` extraction lines (carefully excluding
+  the *different* `dd if="$o" of="$o" ...` self-patch lines used by
+  `--assimilate`/macOS-Silicon support, which read and write the same
+  small in-file region and say nothing about trailing payload data) and
+  never truncate below the furthest `skip+count` found.
+- A **false-positive match while fixing the above**: the first version
+  of the shell-script scan matched `of=`-bearing self-patch lines too,
+  which briefly truncated a locally-built `apelink` down to 499 bytes.
+  Caught immediately by re-running the full pipeline; fixed by requiring
+  `if="$o"` with no `of=` on the same line before treating a `dd`'s
+  `skip=`/`count=` as real trailing-payload data.
 
-Net effect: **every program compiled by `dist/blink-compile.com` self-extracts
-to the new `~/.ape/ape-$VERSION` path**; `dist/blink-compile.com` itself still
-self-extracts to the old `~/.ape-$VERSION` path (confirmed via `strings` on
-both). Closing that last gap would mean root-causing the gzip-corruption bug
-above rather than working around it — left as a known limitation below.
+With `zero-trim.py` fixed, the wrapper's own bootstrap link uses the
+locally-built `apelink` too (`_assemble.sh`), same as every program it
+compiles. **Both `dist/blink-compile.com` itself and everything it
+compiles now correctly self-extract to the new `~/.ape/ape-$VERSION`
+path** (confirmed via `strings`); `cc1`/`as`/`ld.bfd` still self-extract
+to the old `~/.ape-$VERSION` path when needed (they're unaffected
+prebuilt binaries), and now do so correctly and independently on a cold
+cache, rather than by accident.
 
 Validated via `scripts/rebuild-from-scratch.sh` end to end (wipe `build/`
-and `dist/`, re-stage, rebuild, full test suite) and by directly
-inspecting the embedded loader-path strings in both the wrapper binary
-and a compiled test program: **19/19 checks passing**, stable across
-repeated runs, including the wrapper's own self-extraction retried
-several times from a freshly-removed `~/.ape` state.
+and `dist/`, re-stage, rebuild, full test suite) plus direct, repeated
+runs of `cc1`/`as`/`ld.bfd` and the wrapper standalone from a freshly-
+removed `~/.ape` state (5/5 clean compiles each): **19/19 checks
+passing**, stable across repeated runs.
 
 ## Known limitations / next steps
 
-- The wrapper binary (`dist/blink-compile.com`) itself still self-extracts
-  to the old `~/.ape-$VERSION` path rather than the new `~/.ape/ape-$VERSION`
-  one (see previous section) — only programs it compiles get the new path.
-  Root-causing the gzip-corruption bug that blocks using the locally-built
-  `apelink` for the wrapper's own bootstrap link is the concrete follow-up
-  if the wrapper binary itself also needs to avoid the old path.
 - Blink (`vendor/blink-arm64.elf`) is a pinned, vendored prebuilt binary,
   not something `stage-toolchain.sh` builds from source: jart/blink's
   GitHub releases ship only a source tarball (no prebuilt aarch64 asset),
