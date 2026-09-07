@@ -76,7 +76,7 @@ unchanged.
 
 Both gcc-amd64/ and gcc-arm64/ are amd64-native (assimilated from the fat APE
 originals via `assimilate -x`), not just gcc-amd64/. There is no arm64-native
-GCC staged at all. cosmocc-min's resolve_tooldir() picks the tree by TARGET
+GCC staged at all. minicosmocc's resolve_tooldir() picks the tree by TARGET
 architecture only; Blink is invoked whenever the HOST is arm64, regardless of
 target, since Blink emulates the compiler's own (amd64) execution, which is
 independent of what machine code it emits as output. libcosmo.a/crt.o/etc.
@@ -90,12 +90,12 @@ wrapper can invoke them directly with no APE loader dependency:
   libexec/gcc/{x86_64,aarch64}-linux-cosmo/14.1.0/{cc1,collect2}
 Plain-name aliases (bin/as -> bin/x86_64-linux-cosmo-as, bin/ld.bfd ->
 bin/x86_64-linux-cosmo-ld.bfd) exist on disk during staging/build, but are
-NOT embedded into the final binary (see below); cosmocc-min recreates them
+NOT embedded into the final binary (see below); minicosmocc recreates them
 at runtime instead.
 
-Removed 2026-09-07 (unused by cosmocc-min's pipeline): bin/{x86_64,aarch64}-
+Removed 2026-09-07 (unused by minicosmocc's pipeline): bin/{x86_64,aarch64}-
 linux-cosmo-{ar,ranlib,nm,objcopy,objdump,strip,addr2line,size,readelf,
-elfedit,ld}. Verified by grepping wrapper/cosmocc-min.c: it only ever execs
+elfedit,ld}. Verified by grepping wrapper/minicosmocc.c: it only ever execs
 the *-gcc driver directly (which internally finds cc1/collect2/as/ld.bfd via
 -B), plus the host-side fixupobj/apelink/pecheck. None of ar/nm/ranlib/etc.
 are invoked anywhere in the pipeline -- ar/ranlib are only needed to CREATE
@@ -119,7 +119,7 @@ time). Moot now since none of them are staged at all.
 Removed entirely, not staged:
   bin/{x86_64,aarch64}-linux-cosmo-{c++,c++filt,g++}   (C++ frontend/driver)
   bin/{x86_64,aarch64}-linux-cosmo-{cc,cpp}             (2026-09-07: unused --
-    cosmocc-min only ever invokes the *-gcc driver directly; cc1 has an
+    minicosmocc only ever invokes the *-gcc driver directly; cc1 has an
     integrated preprocessor for normal -c compiles, so the standalone cpp
     binary is never exec'd, and cc/gcc are the same C driver under different
     argv[0] names. cc/cpp/gcc were byte-identical copies in the upstream
@@ -130,7 +130,7 @@ Removed entirely, not staged:
                                                           incl. optlinux/tiny/dbg variants)
   lib/libgomp.a, lib/libgomp.spec                       (GCC OpenMP runtime)
   lib/{dbg,optlinux,tiny}/*                             (2026-09-07: alternate
-    cosmo runtime builds for -mdbg/-moptlinux/-mtiny; cosmocc-min never passes
+    cosmo runtime builds for -mdbg/-moptlinux/-mtiny; minicosmocc never passes
     those flags or references these paths. dbg/libcosmo.a alone was
     ~120-130MB per arch, unstripped. Removing all three variants roughly
     halved each staged toolchain tree.)
@@ -139,7 +139,7 @@ Removed entirely, not staged:
   build/blink/blink-amd64.elf                           (2026-09-07: Blink
     only ever emulates amd64 guest code and is only ever invoked when the
     HOST is arm64 -- a blink-amd64.elf would never be exercised by any code
-    path in cosmocc-min, so it was never staged)
+    path in minicosmocc, so it was never staged)
   gcc-arm64-on-amd64/ as a SEPARATE tree from gcc-arm64/ (2026-09-07: this
     plan originally staged an arm64-native gcc-arm64/ for arm64 hosts AND a
     separate amd64-native gcc-arm64-on-amd64/ for amd64 hosts. Realized the
@@ -154,7 +154,7 @@ embed_assets() in scripts/minicosmocc.py skips them when building the embedded z
 (Python's zipfile.write() follows symlinks and would otherwise store a full
 duplicate copy of the target's content under the alias name -- this was
 costing ~82MB compressed, ~27% of the whole embedded payload, before the
-fix). cosmocc-min's create_tool_aliases() recreates these symlinks itself
+fix). minicosmocc's create_tool_aliases() recreates these symlinks itself
 after extracting the embedded assets at runtime.
 
 Not present in this cosmocc build at all (nothing to remove):
@@ -180,9 +180,9 @@ Linker note:
   gold throughout this toolchain; see build/gold/NOTE.md.
 
 History note: an earlier iteration of this plan produced two binaries,
-blink-compile.com (Binary A, fat outputs) and blink-embed.com (Binary B,
+minicosmocc.com (Binary A, fat outputs) and blink-embed.com (Binary B,
 amd64-only outputs + embedded Blink). Binary B was dropped entirely
 (2026-09-07) after finding its arm64 auto-relaunch-via-embedded-Blink
 mechanism would require either risky in-place binary patching of apelink's
 generated shell-script polyglot header, or sacrificing Windows/wine
-compatibility. Only blink-compile.com remains.
+compatibility. Only minicosmocc.com remains.

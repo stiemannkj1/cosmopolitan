@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent  # third_party/minicosmocc
 MONOREPO = ROOT.parent.parent  # cosmopolitan/
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
-WRAPPER_SRC = ROOT / "wrapper" / "cosmocc-min.c"
+WRAPPER_SRC = ROOT / "wrapper" / "minicosmocc.c"
 VENDOR = ROOT / "vendor"
 TESTS_WORK = ROOT / "tests" / "work"
 
@@ -221,7 +221,7 @@ def zero_trim_fat(fat_src, dst, cosmocc):
 # ---------------------------------------------------------------------
 # embed-assets: zip-appends the staged toolchain into an already-built
 # fat-APE wrapper binary, under assets/<subdir>/..., matching
-# cosmocc-min's find_assets() lookup at /zip/assets. APE files are also
+# minicosmocc's find_assets() lookup at /zip/assets. APE files are also
 # valid zips, so appending via zipfile works directly on the finished
 # binary.
 # ---------------------------------------------------------------------
@@ -238,9 +238,9 @@ def embed_assets(out_path, build_dir, subdirs):
                     # during staging) are skipped: zipfile would
                     # otherwise follow them and store a full duplicate
                     # copy of the target's content under the link's
-                    # name. cosmocc-min recreates these aliases itself
+                    # name. minicosmocc recreates these aliases itself
                     # after extraction (see create_tool_aliases() in
-                    # wrapper/cosmocc-min.c).
+                    # wrapper/minicosmocc.c).
                     if full.is_symlink():
                         skipped += 1
                         continue
@@ -349,9 +349,9 @@ def clean_wrapper_caches():
     attributes; clearing every known cache location keeps runs
     reproducible regardless of what earlier manual testing left
     behind."""
-    shutil.rmtree(Path(os.environ.get("TMPDIR", "/tmp")) / "cosmocc-min", ignore_errors=True)
-    shutil.rmtree(Path.home() / ".cache/cosmocc-min", ignore_errors=True)
-    for p in Path.home().glob(".wine/drive_c/users/*/AppData/Local/Temp/cosmocc-min*"):
+    shutil.rmtree(Path(os.environ.get("TMPDIR", "/tmp")) / "minicosmocc", ignore_errors=True)
+    shutil.rmtree(Path.home() / ".cache/minicosmocc", ignore_errors=True)
+    for p in Path.home().glob(".wine/drive_c/users/*/AppData/Local/Temp/minicosmocc*"):
         shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
 
 
@@ -496,7 +496,7 @@ def stage_toolchain():
 
 
 # ---------------------------------------------------------------------
-# assemble: builds dist/blink-compile.com -- a fat APE wrapper +
+# assemble: builds dist/minicosmocc.com -- a fat APE wrapper +
 # amd64/arm64 cosmo toolchains + Blink (for the wrapper's own internal
 # cross-arch dispatch only; outputs it produces do not get Blink
 # embedded).
@@ -511,7 +511,7 @@ def assemble():
         sys.exit("==> need a host C compiler (cc or gcc) to bootstrap")
 
     print("==> building bootstrap wrapper with the host compiler")
-    bootstrap = BUILD / ".bootstrap-cosmocc-min"
+    bootstrap = BUILD / ".bootstrap-minicosmocc"
     subprocess.run([host_cc, "-std=c11", "-D_GNU_SOURCE", "-O2",
                     "-o", str(bootstrap), str(WRAPPER_SRC)], check=True)
 
@@ -567,11 +567,11 @@ def assemble():
     # ELF bootstrap assets, breaking the non-cosmo bootstrap's execv()
     # the same way a fat cc1 always does. Clear it so this step is
     # deterministic regardless of ambient /tmp state.
-    shutil.rmtree(Path(os.environ.get("TMPDIR", "/tmp")) / "cosmocc-min", ignore_errors=True)
-    shutil.rmtree(Path.home() / ".cache/cosmocc-min", ignore_errors=True)
+    shutil.rmtree(Path(os.environ.get("TMPDIR", "/tmp")) / "minicosmocc", ignore_errors=True)
+    shutil.rmtree(Path.home() / ".cache/minicosmocc", ignore_errors=True)
 
     print("==> self-hosting: compiling the wrapper into a fat APE via the staged cosmo toolchain")
-    out = DIST / "blink-compile.com"
+    out = DIST / "minicosmocc.com"
     DIST.mkdir(parents=True, exist_ok=True)
     out.unlink(missing_ok=True)
     env = dict(os.environ, COSMOCC_MIN_ASSETS=str(bootstrap_assets))
@@ -671,7 +671,7 @@ def test_hello_world():
     clean_ape_loaders(verbose=False)
     clean_wrapper_caches()
     hello_native = work / "hello_native"
-    r = run_ape([DIST / "blink-compile.com", "-o", "hello_native", "hello.c"], cwd=work)
+    r = run_ape([DIST / "minicosmocc.com", "-o", "hello_native", "hello.c"], cwd=work)
     if r.returncode == 0:
         run_output_matrix(hello_native, "compile=amd64-native,")
     else:
@@ -684,7 +684,7 @@ def test_hello_world():
     clean_wrapper_caches()
     arm64_wrapper = work / "blink-compile.arm64.elf"
     hello_from_arm64 = work / "hello_from_arm64"
-    ra = run_ape([COSMOCC / "bin/assimilate", "-a", "-o", arm64_wrapper, DIST / "blink-compile.com"])
+    ra = run_ape([COSMOCC / "bin/assimilate", "-a", "-o", arm64_wrapper, DIST / "minicosmocc.com"])
     ok = False
     if ra.returncode == 0:
         rq = subprocess.run(["qemu-aarch64", "-E", f"HOME={Path.home()}", str(arm64_wrapper),
@@ -701,7 +701,7 @@ def test_hello_world():
     clean_ape_loaders(verbose=False)
     clean_wrapper_caches()
     wine_exe = work / "blink-compile-wine.exe"
-    shutil.copy(DIST / "blink-compile.com", wine_exe)
+    shutil.copy(DIST / "minicosmocc.com", wine_exe)
     hello_from_wine = work / "hello_from_wine"
     rw = subprocess.run(["wine", str(wine_exe), "-o", "hello_from_wine", "hello.c"],
                          cwd=work, capture_output=True, text=True)
@@ -737,7 +737,7 @@ def test_hello_world():
 # ---------------------------------------------------------------------
 # tests/a-tinycc: builds tinycc (a real ~30K-line, 24-file C project,
 # a unity build that suits this wrapper's one-source-file-per-
-# invocation design well) with dist/blink-compile.com, confirms the
+# invocation design well) with dist/minicosmocc.com, confirms the
 # built tcc reports its version correctly on all three platforms, and
 # validates self-compile determinism between amd64-native and windows-
 # wine. arm64-qemu self-compile is intentionally excluded: an
@@ -764,18 +764,18 @@ def test_tinycc():
         print(f"tinycc source not found at {tinycc_src}", file=sys.stderr)
         return False
     if not (tinycc_src / "config.h").exists():
-        print("=== generating tinycc's config.h (host tool, unrelated to blink-compile.com) ===")
+        print("=== generating tinycc's config.h (host tool, unrelated to minicosmocc.com) ===")
         subprocess.run(["./configure", "--prefix=/usr/local"], cwd=tinycc_src,
                         check=True, stdout=subprocess.DEVNULL)
 
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
 
-    print("=== Build tinycc with blink-compile.com (native amd64) ===")
+    print("=== Build tinycc with minicosmocc.com (native amd64) ===")
     clean_ape_loaders(verbose=False)
     clean_wrapper_caches()
     tcc_bin = work / "tcc"
-    run_ape([DIST / "blink-compile.com", "-o", tcc_bin, "tcc.c"], cwd=tinycc_src)
+    run_ape([DIST / "minicosmocc.com", "-o", tcc_bin, "tcc.c"], cwd=tinycc_src)
     record("build tinycc", tcc_bin.exists())
 
     if not tcc_bin.exists():

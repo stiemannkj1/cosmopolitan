@@ -1,6 +1,6 @@
 # Minimal Cosmopolitan/APE C Compiler ("minicosmocc") — Work Summary
 
-Single standalone APE binary, `dist/blink-compile.com` (currently **72 MB**),
+Single standalone APE binary, `dist/minicosmocc.com` (currently **72 MB**),
 that compiles C source into fat (amd64+arm64 native) APE executables. Built
 on the prebuilt `cosmocc` 4.0.2 release, stripped to C-only, and packaged so
 the wrapper carries its own toolchain as embedded assets. The GCC toolchain
@@ -42,7 +42,7 @@ A single, self-contained Python script (no other scripts to source or
 chain) that wipes `build/`, `dist/`, and test scratch state, re-stages
 `build/` from the `cosmocc` release (downloading it if not already
 cached under `../../.cosmocc/`, or unconditionally with `build-uncached`),
-rebuilds `dist/blink-compile.com`, and — for `test` — runs the full test
+rebuilds `dist/minicosmocc.com`, and — for `test` — runs the full test
 suite. Set `COSMOCC_VERSION` to stage from a different release. See
 "Full clean-checkout reproducibility" below for what this was validated
 against, and "One consolidated script" further down for what this
@@ -50,7 +50,7 @@ replaced.
 
 ## Architecture
 
-**Pipeline** (`wrapper/cosmocc-min.c`, ~650 lines):
+**Pipeline** (`wrapper/minicosmocc.c`, ~650 lines):
 ```
 compile (cc1 directly) -> assemble (as directly) -> fixupobj ->
 link (ld.bfd directly) -> fixupobj -> apelink (join slices) -> pecheck
@@ -114,7 +114,7 @@ within this plan's constraints:
   test matrix).
 
 Binary B was removed entirely (wrapper code, build script, staged assets).
-Only `blink-compile.com` (fat, dual-native, no embedded Blink) remains.
+Only `minicosmocc.com` (fat, dual-native, no embedded Blink) remains.
 
 ## Size optimization: 429 MB → 72 MB
 
@@ -174,7 +174,7 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
    `pecheck`) is zeroed+trimmed (APE-preserving), never plain-assimilated,
    in the final staged/embedded assets.
 2. **The build-time bootstrap step needed its own fix.** The very first
-   self-hosting compile (compiling `cosmocc-min.c` into a fat APE using a
+   self-hosting compile (compiling `minicosmocc.c` into a fat APE using a
    plain host-`gcc`-compiled, non-cosmo bootstrap binary) can't `execv()` a
    fat/APE file at all — only a *cosmo-linked* process's `execve()` has the
    self-extraction retry logic that makes that work. Fixed by staging
@@ -184,7 +184,7 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
 3. **Cache location matters.** `$HOME`-derived paths (`/home/user/...`) hit
    inconsistent path-translation behavior in Cosmopolitan's Windows layer;
    `$TMPDIR`-derived paths (`/tmp/...`) are reliable. The wrapper's cache
-   now lives under `$TMPDIR/cosmocc-min/<version>/`, not `~/.cache/...`.
+   now lives under `$TMPDIR/minicosmocc/<version>/`, not `~/.cache/...`.
 
 ## Phase 5: the test suite
 
@@ -201,7 +201,7 @@ check and the loader-reinstallation cross-check. All 11 checks pass.
 **`test_tinycc()`** — builds tinycc (a real ~30K-line, 24-file C
 project that happens to be a unity build, `tcc.c` → ... → every other
 source file, which suits this wrapper's one-source-file-per-invocation
-design well) with `blink-compile.com`, confirms the built `tcc` reports its
+design well) with `minicosmocc.com`, confirms the built `tcc` reports its
 version correctly on all three platforms, and validates self-compile
 (`tcc -c tcc.c -o out.o`) determinism between amd64-native and
 windows-wine. The arm64-qemu self-compile leg is intentionally excluded:
@@ -233,7 +233,7 @@ run of the *built product* (using the real fat/APE assets) would get
 reused by the *build script's* bootstrap step instead of the plain-ELF
 assets it actually needs, breaking the non-cosmo bootstrap's `execv()`
 the same way any fat `cc1` always does for a non-cosmo caller. Fixed by
-clearing `$TMPDIR/cosmocc-min` and `~/.cache/cosmocc-min` before
+clearing `$TMPDIR/minicosmocc` and `~/.cache/minicosmocc` before
 self-hosting, making the build deterministic regardless of ambient
 `/tmp` state left by prior manual testing or test-suite runs.
 
@@ -244,7 +244,7 @@ Two independent, back-to-back runs of `scripts/minicosmocc.py build`
 (verified via `sha256sum`) — the build is reproducible given the staged
 `build/` toolchain.
 
-**Final size**: `dist/blink-compile.com` = **72 MB**.
+**Final size**: `dist/minicosmocc.com` = **72 MB**.
 
 **Final validation matrix** (`scripts/minicosmocc.py test`, fresh build,
 freshly loader-cleaned system): **19/19 checks passing** —
@@ -264,7 +264,7 @@ the full test suite. Verified by wiping `build/` and `dist/` entirely and
 running `scripts/minicosmocc.py test` fresh: it re-staged `build/`
 byte-for-byte equivalent to the prior hand-staged version (diffed
 directly — only stale cruft from earlier manual staging was missing,
-nothing load-bearing), reassembled `dist/blink-compile.com`, and passed
+nothing load-bearing), reassembled `dist/minicosmocc.com`, and passed
 all 19/19 test-suite checks. `cosmocc` itself is still never built from
 source, only downloaded — consistent with the project's original ground
 rule — and Blink is vendored as a prebuilt binary (`vendor/blink-arm64.elf`)
@@ -330,7 +330,7 @@ Three distinct bugs surfaced and were resolved while getting here:
 
 With zero-trim fixed, the wrapper's own bootstrap link uses the
 locally-built `apelink` too (`assemble()`), same as every program it
-compiles. **Both `dist/blink-compile.com` itself and everything it
+compiles. **Both `dist/minicosmocc.com` itself and everything it
 compiles now correctly self-extract to the new `~/.ape/ape-$VERSION`
 path** (confirmed via `strings`); `cc1`/`as`/`ld.bfd` still self-extract
 to the old `~/.ape-$VERSION` path when needed (they're unaffected
@@ -375,7 +375,7 @@ a full `scripts/minicosmocc.py test` run after the consolidation:
   and was never meant to be, a general-purpose gcc replacement.
 - `build/` (staged toolchain assets) is a generated artifact, not
   source — reproducible from a fresh `cosmocc` release via
-  `scripts/minicosmocc.py build`. It's gitignored; `dist/blink-compile.com`
+  `scripts/minicosmocc.py build`. It's gitignored; `dist/minicosmocc.com`
   (the built product) is tracked in git despite also being reproducible,
   so the toolchain ships with the repo rather than only its build recipe.
 - A wine-compiled output's executable bit doesn't survive Wine's
@@ -387,7 +387,7 @@ a full `scripts/minicosmocc.py test` run after the consolidation:
 
 ```
 third_party/minicosmocc/
-  wrapper/cosmocc-min.c       the whole compiler wrapper (~650 lines)
+  wrapper/minicosmocc.c       the whole compiler wrapper (~650 lines)
   vendor/blink-arm64.elf      pinned prebuilt Blink binary (see Known limitations)
   scripts/
     minicosmocc.py            stage + build + test, one script (test|build|build-uncached)
@@ -398,6 +398,6 @@ third_party/minicosmocc/
     blink/                    blink-arm64.elf only
     include/                  shared cosmo headers
     gold/NOTE.md              no gold linker exists anywhere; ld.bfd substitutes
-  dist/blink-compile.com      the built product (generated, tracked in git)
+  dist/minicosmocc.com      the built product (generated, tracked in git)
   tests/work/                 test scratch space (generated, gitignored)
 ```
