@@ -20,10 +20,11 @@ directory, then rebased directly onto the `4.0.2` release tag).
 ## Current status: all phases complete
 
 - Phases 0–7 of the original plan are done: environment prep, toolchain
-  acquisition/staging, wrapper implementation, build script, loader-cleanup
-  script (`scripts/clean-ape-loaders.sh`), the test suite
-  (`tests/a-hello-world.sh`, `tests/a-tinycc.sh`, `tests/run-all.sh`), the
-  bug-fix loop (Phase 6 — see below), and this final report (Phase 7).
+  acquisition/staging, wrapper implementation, build script, loader
+  cleanup, the test suite, the bug-fix loop (Phase 6 — see below), and
+  this final report (Phase 7). All of build-staging, assembly, loader
+  cleanup, and the test suite now live in one consolidated tool,
+  `scripts/minicosmocc.py` (see "Rebuilding from scratch" below).
 - Everything has been validated repeatedly with full clean-cache builds:
   native amd64, arm64-via-Blink (`qemu-aarch64`), and Wine all produce
   **byte-identical** output for a `malloc`/`free` hello-world, and building
@@ -33,13 +34,19 @@ directory, then rebased directly onto the `4.0.2` release tag).
 ## Rebuilding from scratch
 
 ```
-scripts/rebuild-from-scratch.sh
+scripts/minicosmocc.py build            # full clean, stage+build (cached cosmocc)
+scripts/minicosmocc.py build-uncached   # full clean, redownload cosmocc, stage+build
+scripts/minicosmocc.py test              # full clean, stage+build, run the full test suite
 ```
-Wipes `build/` and `dist/`, re-stages `build/` from the `cosmocc` release
-(downloading it if not already cached under `../../.cosmocc/`), rebuilds
-`dist/blink-compile.com`, and runs the full test suite. Set
-`COSMOCC_VERSION` to stage from a different release. See "Full
-clean-checkout reproducibility" below for what this was validated against.
+A single, self-contained Python script (no other scripts to source or
+chain) that wipes `build/`, `dist/`, and test scratch state, re-stages
+`build/` from the `cosmocc` release (downloading it if not already
+cached under `../../.cosmocc/`, or unconditionally with `build-uncached`),
+rebuilds `dist/blink-compile.com`, and — for `test` — runs the full test
+suite. Set `COSMOCC_VERSION` to stage from a different release. See
+"Full clean-checkout reproducibility" below for what this was validated
+against, and "One consolidated script" further down for what this
+replaced.
 
 ## Architecture
 
@@ -143,12 +150,13 @@ something specific to these particular tools) accounted for a further
 ~2.4MB per large file. Where APE-ness needed to be preserved (see next
 section), that trailing content is dropped in addition to zeroing the
 unused slice, recovering size that a naive "just zero the slice" approach
-would otherwise leave behind — see `scripts/zero-trim.py`.
+would otherwise leave behind — see `zero_trim_fat()`/`zero_trim_single()`
+in `scripts/minicosmocc.py`.
 
-`scripts/zero-trim.py` is invoked by `scripts/stage-toolchain.sh`, which
-re-derives `build/` from a fresh `cosmocc` release, so re-staging from a
-version bump always re-applies the zero+trim step rather than needing a
-separate manual pass.
+Zero-trim runs as part of `scripts/minicosmocc.py`'s `stage_toolchain()`
+step, which re-derives `build/` from a fresh `cosmocc` release, so
+re-staging from a version bump always re-applies the zero+trim step
+rather than needing a separate manual pass.
 
 ## Windows/Wine compilation: the real fix
 
@@ -171,8 +179,8 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
    fat/APE file at all — only a *cosmo-linked* process's `execve()` has the
    self-extraction retry logic that makes that work. Fixed by staging
    temporary plain-ELF (`assimilate`d) copies of the toolchain just for
-   that one bootstrap step (`scripts/_assemble.sh`), which never affects
-   what actually gets embedded into the shipped binary.
+   that one bootstrap step (`assemble()` in `scripts/minicosmocc.py`),
+   which never affects what actually gets embedded into the shipped binary.
 3. **Cache location matters.** `$HOME`-derived paths (`/home/user/...`) hit
    inconsistent path-translation behavior in Cosmopolitan's Windows layer;
    `$TMPDIR`-derived paths (`/tmp/...`) are reliable. The wrapper's cache
@@ -181,15 +189,16 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
 ## Phase 5: the test suite
 
 Only §5.1 (Binary A tests) and §5.3 (cross-check) from the plan apply,
-since Binary B no longer exists.
+since Binary B no longer exists. Both scenarios below are functions in
+`scripts/minicosmocc.py`, run via `scripts/minicosmocc.py test`.
 
-**`tests/a-hello-world.sh`** — the full 3×3 matrix from the plan: compile a
+**`test_hello_world()`** — the full 3×3 matrix from the plan: compile a
 `malloc`/`free` hello-world on {amd64-native, arm64-via-qemu+Blink,
 windows-via-wine}, then run each resulting binary on all three of the same
 platforms (9 combinations), plus a cross-compiler-host byte-identical-output
 check and the loader-reinstallation cross-check. All 11 checks pass.
 
-**`tests/a-tinycc.sh`** — builds tinycc (a real ~30K-line, 24-file C
+**`test_tinycc()`** — builds tinycc (a real ~30K-line, 24-file C
 project that happens to be a unity build, `tcc.c` → ... → every other
 source file, which suits this wrapper's one-source-file-per-invocation
 design well) with `blink-compile.com`, confirms the built `tcc` reports its
@@ -208,60 +217,60 @@ so the test validates what's actually in scope (building tinycc, and
 compile-only self-hosting) rather than full link+`-run` execution via
 tinycc's own separately-built runtime. All 8 checks pass.
 
-**`tests/run-all.sh`** — orchestrates both, cleaning APE loaders before
-each. Both currently pass.
+**`run_tests()`** — orchestrates both, cleaning APE loaders before each.
+Both currently pass.
 
 ## Phase 6: bug-fix loop
 
 No Phase 5 test was failing when this phase started, so there was nothing
 to root-cause against test failures directly. Phase 7's reproducibility
 check (immediately below) did surface one real bug, fixed as part of
-confirming reproducibility: `scripts/_assemble.sh`'s self-hosting build
-step didn't clear the wrapper's own runtime cache first. The wrapper
-checks its cache-readiness (keyed only by version, not content) before
-even looking at `COSMOCC_MIN_ASSETS` — so a cache left "ready" by an
-unrelated earlier run of the *built product* (using the real fat/APE
-assets) would get reused by the *build script's* bootstrap step instead
-of the plain-ELF assets it actually needs, breaking the non-cosmo
-bootstrap's `execv()` the same way any fat `cc1` always does for a
-non-cosmo caller. Fixed by having `_assemble.sh` clear
-`$TMPDIR/cosmocc-min` and `~/.cache/cosmocc-min` before self-hosting,
-making the build deterministic regardless of ambient `/tmp` state left
-by prior manual testing or test-suite runs.
+confirming reproducibility: the self-hosting build step didn't clear the
+wrapper's own runtime cache first. The wrapper checks its cache-readiness
+(keyed only by version, not content) before even looking at
+`COSMOCC_MIN_ASSETS` — so a cache left "ready" by an unrelated earlier
+run of the *built product* (using the real fat/APE assets) would get
+reused by the *build script's* bootstrap step instead of the plain-ELF
+assets it actually needs, breaking the non-cosmo bootstrap's `execv()`
+the same way any fat `cc1` always does for a non-cosmo caller. Fixed by
+clearing `$TMPDIR/cosmocc-min` and `~/.cache/cosmocc-min` before
+self-hosting, making the build deterministic regardless of ambient
+`/tmp` state left by prior manual testing or test-suite runs.
 
 ## Phase 7: final report
 
-Two independent, back-to-back runs of `scripts/build-blink-compile.sh`
+Two independent, back-to-back runs of `scripts/minicosmocc.py build`
 (after the Phase 6 fix above) produce **byte-identical** output
 (verified via `sha256sum`) — the build is reproducible given the staged
 `build/` toolchain.
 
 **Final size**: `dist/blink-compile.com` = **72 MB**.
 
-**Final validation matrix** (`tests/run-all.sh`, fresh build, freshly
-loader-cleaned system): **19/19 checks passing** —
-`tests/a-hello-world.sh` 11/11 (the full 3×3 compile-host × run-host
+**Final validation matrix** (`scripts/minicosmocc.py test`, fresh build,
+freshly loader-cleaned system): **19/19 checks passing** —
+`test_hello_world()` 11/11 (the full 3×3 compile-host × run-host
 matrix across amd64-native/arm64-qemu/windows-wine, plus byte-identity
-and loader-reinstallation cross-checks) and `tests/a-tinycc.sh` 8/8
+and loader-reinstallation cross-checks) and `test_tinycc()` 8/8
 (building and validating tinycc, a real ~30K-line C project, across the
 same three platforms).
 
-**Full clean-checkout reproducibility**: `scripts/stage-toolchain.sh` now
-automates the whole `build/` derivation (download-or-reuse the `cosmocc`
-release, assimilate-measure + zero+trim every dual-arch tool, stage the
-filtered `lib/`/`include/` trees, install the vendored `blink-arm64.elf`,
-write `gold/NOTE.md`) in one command, and `scripts/rebuild-from-scratch.sh`
-chains it with the build and the full test suite. Verified by wiping
-`build/` and `dist/` entirely and running `rebuild-from-scratch.sh` fresh:
-it re-staged `build/` byte-for-byte equivalent to the prior hand-staged
-version (diffed directly — only stale cruft from earlier manual staging
-was missing, nothing load-bearing), reassembled `dist/blink-compile.com`
-at the same 72MB, and passed all 19/19 test-suite checks. `cosmocc` itself
-is still never built from source, only downloaded — consistent with the
-project's original ground rule — and Blink is vendored as a prebuilt
-binary (`vendor/blink-arm64.elf`) rather than built from source, since
-upstream ships no prebuilt aarch64 release asset and this host has no
-aarch64 cross-compiler to build it with.
+**Full clean-checkout reproducibility**: `scripts/minicosmocc.py` (its
+`stage_toolchain()` function) automates the whole `build/` derivation
+(download-or-reuse the `cosmocc` release, assimilate-measure + zero+trim
+every dual-arch tool, stage the filtered `lib/`/`include/` trees, install
+the vendored `blink-arm64.elf`, write `gold/NOTE.md`) in one command, and
+`build`/`build-uncached`/`test` chain it with the build and (for `test`)
+the full test suite. Verified by wiping `build/` and `dist/` entirely and
+running `scripts/minicosmocc.py test` fresh: it re-staged `build/`
+byte-for-byte equivalent to the prior hand-staged version (diffed
+directly — only stale cruft from earlier manual staging was missing,
+nothing load-bearing), reassembled `dist/blink-compile.com`, and passed
+all 19/19 test-suite checks. `cosmocc` itself is still never built from
+source, only downloaded — consistent with the project's original ground
+rule — and Blink is vendored as a prebuilt binary (`vendor/blink-arm64.elf`)
+rather than built from source, since upstream ships no prebuilt aarch64
+release asset and this host has no aarch64 cross-compiler to build it
+with.
 
 ## Locally-built apelink + ape loader (EDR/CrowdStrike loader-path fix)
 
@@ -273,10 +282,11 @@ to a normally-named file inside a hidden directory (`~/.ape/ape-$VERSION`).
 The prebuilt `cosmocc-4.0.2` release predates this fix, so a prebuilt
 `apelink` always bakes the old path into whatever it links. `apelink` and
 the `ape-x86_64.elf`/`ape-aarch64.elf` loader stubs are therefore built
-from this repo's own local source (`scripts/stage-toolchain.sh` step 4,
-via `.cosmocc/current/bin/make MODE=x86_64|aarch64`) instead of taken
-from the release — the only two pieces of the toolchain not sourced from
-the prebuilt release; `cc1`/`as`/`ld.bfd`/`fixupobj`/`pecheck` still are.
+from this repo's own local source (`stage_toolchain()` in
+`scripts/minicosmocc.py`, via `.cosmocc/current/bin/make MODE=x86_64|aarch64`)
+instead of taken from the release — the only two pieces of the toolchain
+not sourced from the prebuilt release; `cc1`/`as`/`ld.bfd`/`fixupobj`/
+`pecheck` still are.
 
 Three distinct bugs surfaced and were resolved while getting here:
 
@@ -286,16 +296,16 @@ Three distinct bugs surfaced and were resolved while getting here:
   disappeared entirely once the branch was rebased directly onto `4.0.2`;
   no code change was needed, it was a transient side effect of building
   against a HEAD far ahead of the pinned release.
-- **`zero-trim.py` was silently deleting real loader payloads** — the
+- **Zero-trim was silently deleting real loader payloads** — the
   actual root cause behind what first looked like a narrower "wrapper's
   own bootstrap link" bug. Every `APE_NO_MODIFY_SELF` binary (`cc1`,
   `as`, `ld.bfd`, and any locally-built `apelink`/loader) stores its
   self-extraction payload as raw bytes referenced only by a `dd if="$o"
   skip=N count=M | gzip -dc` in its own embedded shell script — a range
   `readelf -lW`'s segment table knows nothing about, sitting right after
-  the last real ELF segment. `zero-trim.py` truncated to that segment
-  end, cutting the payload off entirely. Every zero-trimmed binary in
-  this project was, until this fix, only working on a truly cold
+  the last real ELF segment. Zero-trim truncated to that segment end,
+  cutting the payload off entirely. Every zero-trimmed binary in this
+  project was, until this fix, only working on a truly cold
   `~/.ape`/`~/.ape-$VERSION` state because *something else* (almost
   always the wrapper's own self-extraction, sharing the same cache path)
   happened to populate the loader cache first. That coincidence broke
@@ -304,12 +314,13 @@ Three distinct bugs surfaced and were resolved while getting here:
   needing the *old* flat one — no shared cache entry left to free-ride
   on, so `cc1`'s own broken self-extraction was finally exposed as
   `gzip: stdin: unexpected end of file` on every real compile.
-  Fixed `zero-trim.py` to scan each file's own shell-script header for
-  `dd if="$o" ... skip=N count=M` extraction lines (carefully excluding
-  the *different* `dd if="$o" of="$o" ...` self-patch lines used by
-  `--assimilate`/macOS-Silicon support, which read and write the same
-  small in-file region and say nothing about trailing payload data) and
-  never truncate below the furthest `skip+count` found.
+  Fixed zero-trim (`zero_trim_fat()`/`zero_trim_single()` in
+  `scripts/minicosmocc.py`) to scan each file's own shell-script header
+  for `dd if="$o" ... skip=N count=M` extraction lines (carefully
+  excluding the *different* `dd if="$o" of="$o" ...` self-patch lines
+  used by `--assimilate`/macOS-Silicon support, which read and write
+  the same small in-file region and say nothing about trailing payload
+  data) and never truncate below the furthest `skip+count` found.
 - A **false-positive match while fixing the above**: the first version
   of the shell-script scan matched `of=`-bearing self-patch lines too,
   which briefly truncated a locally-built `apelink` down to 499 bytes.
@@ -317,8 +328,8 @@ Three distinct bugs surfaced and were resolved while getting here:
   `if="$o"` with no `of=` on the same line before treating a `dd`'s
   `skip=`/`count=` as real trailing-payload data.
 
-With `zero-trim.py` fixed, the wrapper's own bootstrap link uses the
-locally-built `apelink` too (`_assemble.sh`), same as every program it
+With zero-trim fixed, the wrapper's own bootstrap link uses the
+locally-built `apelink` too (`assemble()`), same as every program it
 compiles. **Both `dist/blink-compile.com` itself and everything it
 compiles now correctly self-extract to the new `~/.ape/ape-$VERSION`
 path** (confirmed via `strings`); `cc1`/`as`/`ld.bfd` still self-extract
@@ -326,16 +337,30 @@ to the old `~/.ape-$VERSION` path when needed (they're unaffected
 prebuilt binaries), and now do so correctly and independently on a cold
 cache, rather than by accident.
 
-Validated via `scripts/rebuild-from-scratch.sh` end to end (wipe `build/`
+Validated via `scripts/minicosmocc.py test` end to end (wipe `build/`
 and `dist/`, re-stage, rebuild, full test suite) plus direct, repeated
 runs of `cc1`/`as`/`ld.bfd` and the wrapper standalone from a freshly-
 removed `~/.ape` state (5/5 clean compiles each): **19/19 checks
 passing**, stable across repeated runs.
 
+## One consolidated script
+
+`scripts/stage-toolchain.sh`, `_assemble.sh`, `build-blink-compile.sh`,
+`rebuild-from-scratch.sh`, `embed-assets.py`, `zero-trim.py`,
+`clean-ape-loaders.sh`, and `tests/{a-hello-world,a-tinycc,run-all}.sh`
+— eight separate scripts that only ever ran as one pipeline, sourcing
+and shelling out to each other — are now `scripts/minicosmocc.py`, one
+self-contained Python script with three subcommands (`test`, `build`,
+`build-uncached`; see "Rebuilding from scratch" above). Every step,
+comment, and hard-won rationale from those scripts carried over
+unchanged; nothing was silently dropped in the merge. Re-validated with
+a full `scripts/minicosmocc.py test` run after the consolidation:
+19/19 checks passing.
+
 ## Known limitations / next steps
 
 - Blink (`vendor/blink-arm64.elf`) is a pinned, vendored prebuilt binary,
-  not something `stage-toolchain.sh` builds from source: jart/blink's
+  not something `scripts/minicosmocc.py` builds from source: jart/blink's
   GitHub releases ship only a source tarball (no prebuilt aarch64 asset),
   and this build host has no aarch64 cross-compiler to build one. If
   Blink ever needs a version bump, a new `blink-arm64.elf` has to be
@@ -348,15 +373,15 @@ passing**, stable across repeated runs.
 - This wrapper supports exactly one C-only, single-source-file compile per
   invocation, against exactly one cosmo runtime configuration. It is not,
   and was never meant to be, a general-purpose gcc replacement.
-- `build/` (staged toolchain assets) and `dist/` (built output) are
-  generated/fetched artifacts, not source — they're reproducible from a
-  fresh `cosmocc` release via `scripts/build-blink-compile.sh`. `build/` is
-  gitignored; `dist/` is currently untracked (not yet committed or
-  ignored) — worth a deliberate decision one way or the other.
+- `build/` (staged toolchain assets) is a generated artifact, not
+  source — reproducible from a fresh `cosmocc` release via
+  `scripts/minicosmocc.py build`. It's gitignored; `dist/blink-compile.com`
+  (the built product) is tracked in git despite also being reproducible,
+  so the toolchain ships with the repo rather than only its build recipe.
 - A wine-compiled output's executable bit doesn't survive Wine's
   Windows-translation layer (Windows has no equivalent permission concept)
   — a real user transferring such a binary to Linux/arm64 needs
-  `chmod +x` first, same as `tests/a-hello-world.sh` does internally.
+  `chmod +x` first, same as `test_hello_world()` does internally.
 
 ## Directory structure
 
@@ -365,13 +390,7 @@ third_party/minicosmocc/
   wrapper/cosmocc-min.c       the whole compiler wrapper (~650 lines)
   vendor/blink-arm64.elf      pinned prebuilt Blink binary (see Known limitations)
   scripts/
-    rebuild-from-scratch.sh  orchestrator: stage -> build -> test, one command
-    stage-toolchain.sh       derives build/ from a cosmocc release (download-or-reuse)
-    zero-trim.py             the assimilate-waste + trailing-zip-content fix
-    build-blink-compile.sh    entry point: builds dist/blink-compile.com
-    _assemble.sh              shared build logic (bootstrap, embed, verify)
-    embed-assets.py           zip-embeds staged assets into the built wrapper
-    clean-ape-loaders.sh      removes global/user/temp APE loaders before tests
+    minicosmocc.py            stage + build + test, one script (test|build|build-uncached)
     strip-manifest.txt        full record of what was stripped/kept and why
   build/                      staged toolchain (generated, gitignored)
     gcc-amd64/, gcc-arm64/    cc1, as, ld.bfd (+ lib/, no gcc or collect2)
@@ -379,9 +398,6 @@ third_party/minicosmocc/
     blink/                    blink-arm64.elf only
     include/                  shared cosmo headers
     gold/NOTE.md              no gold linker exists anywhere; ld.bfd substitutes
-  dist/blink-compile.com      the built product (generated, currently untracked)
-  tests/
-    a-hello-world.sh          Phase 5.1.1 (11 checks, all passing)
-    a-tinycc.sh               Phase 5.1.2 (8 checks, all passing)
-    run-all.sh                orchestrates both
+  dist/blink-compile.com      the built product (generated, tracked in git)
+  tests/work/                 test scratch space (generated, gitignored)
 ```

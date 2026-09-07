@@ -2,10 +2,10 @@ Strip manifest for minimal cosmo/APE C-only toolchain
 Source: ~/Projects/work/cosmopolitan/.cosmocc/4.0.2 (Cosmopolitan cosmocc release, GCC 14.1.0)
 
 This is a historical record of what was stripped/kept and why. build/ is
-now re-derived from scratch by scripts/stage-toolchain.sh (chained with a
-full build+test by scripts/rebuild-from-scratch.sh) rather than by hand --
-this file documents the reasoning baked into that script, not a set of
-manual steps still left to run.
+now re-derived from scratch by `scripts/minicosmocc.py build` (or `test`,
+which also runs the test suite afterward) rather than by hand -- this
+file documents the reasoning baked into that script, not a set of manual
+steps still left to run.
 
 Current staged layout (build/):
   gcc-amd64/  x86_64-linux-cosmo toolchain, amd64-native binaries, targets amd64
@@ -66,8 +66,9 @@ silently deleted that payload; every zero-trimmed binary in this
 project only worked on a truly cold loader-cache state because
 something else (almost always the wrapper's own self-extraction,
 sharing the same cache path) happened to populate the cache first.
-zero-trim.py now also scans each file's own shell-script header for
-these `dd` extraction lines and never truncates below the furthest
+Zero-trim (in scripts/minicosmocc.py) now also scans each file's own
+shell-script header for these `dd` extraction lines and never truncates
+below the furthest
 `skip+count` found, so the "50%/104.6MB" savings figure above is
 slightly optimistic (a few KB per binary now survives the trim that
 didn't before) but the technique and validation approach are otherwise
@@ -149,7 +150,7 @@ Removed entirely, not staged:
 Symlink handling (2026-09-07): the plain-name tool aliases (ld, ld.bfd, as,
 ar, nm, objcopy, objdump, ranlib, readelf, size, strip, addr2line, elfedit)
 created during staging are real filesystem symlinks on disk, but
-scripts/embed-assets.py skips them when building the embedded zip payload
+embed_assets() in scripts/minicosmocc.py skips them when building the embedded zip payload
 (Python's zipfile.write() follows symlinks and would otherwise store a full
 duplicate copy of the target's content under the alias name -- this was
 costing ~82MB compressed, ~27% of the whole embedded payload, before the
