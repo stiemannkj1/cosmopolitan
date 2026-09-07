@@ -1,0 +1,150 @@
+Strip manifest for minimal cosmo/APE C-only toolchain
+Source: ~/Projects/work/cosmopolitan/.cosmocc/4.0.2 (Cosmopolitan cosmocc release, GCC 14.1.0)
+
+Current staged layout (build/):
+  gcc-amd64/  x86_64-linux-cosmo toolchain, amd64-native binaries, targets amd64
+  gcc-arm64/  aarch64-linux-cosmo toolchain, amd64-native binaries, targets arm64
+  apelink/    apelink/fixupobj/pecheck, one amd64-native + one arm64-native copy
+              of each (assimilate -x / -a), plus the ape-*.elf loader stubs
+  blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
+              code -- see below for why no blink-amd64.elf is needed)
+  include/    shared, arch-independent headers, staged once
+  gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
+
+Truncation of trailing unreferenced data (2026-09-07): every `assimilate`d
+executable (gcc/cc1/collect2/as/ld.bfd x2 trees, apelink/fixupobj/pecheck
+x2 host arches) was found to still physically contain the OTHER
+architecture's ELF slice after assimilation -- `assimilate` patches the
+active headers/program-header table to select one slice but does NOT
+truncate the other slice's bytes away. Confirmed via `readelf -lW`: file
+size vs. (offset+filesize) of the last PT_LOAD/TLS/NOTE segment showed
+~50% of every assimilated file was outside any loadable segment (e.g.
+cc1: 82.4MB file, only 41.5MB actually mapped at runtime). Also applied
+to build/blink/blink-arm64.elf for an unrelated but analogous reason: it
+ships unstripped with full DWARF debug sections (.debug_info etc.) and a
+.symtab/.strtab, none of which are inside any loadable segment either, so
+the same "truncate to end of last loadable segment" trick applies (a
+normal `strip` would have been more idiomatic here but no aarch64-capable
+strip/objcopy was available on this amd64 host).
+Verified safe empirically before applying: built a scratch copy of the
+whole toolchain with every one of these files truncated to
+(last-segment-offset + last-segment-filesize), ran the full
+compile->link->apelink pipeline against it end-to-end, and separately
+ran the truncated blink-arm64.elf as an actual emulator -- both produced
+correct, working output. Then applied to the real staged files and
+re-validated the full build + arm64/Blink-dispatch test suite again.
+Total: 208.2MB -> 103.7MB across the 17 affected files (saved 104.6MB).
+This was the single largest reduction of the whole size-trimming effort.
+
+Both gcc-amd64/ and gcc-arm64/ are amd64-native (assimilated from the fat APE
+originals via `assimilate -x`), not just gcc-amd64/. There is no arm64-native
+GCC staged at all. cosmocc-min's resolve_tooldir() picks the tree by TARGET
+architecture only; Blink is invoked whenever the HOST is arm64, regardless of
+target, since Blink emulates the compiler's own (amd64) execution, which is
+independent of what machine code it emits as output. libcosmo.a/crt.o/etc.
+are architecture-specific link-time archives, not executables, so both the
+amd64 and arm64 copies are always staged regardless of host, to build the two
+slices of a fat output binary.
+
+Per-tree contents, assimilated to amd64-native ELF (not fat APE) so the
+wrapper can invoke them directly with no APE loader dependency:
+  bin/{x86_64,aarch64}-linux-cosmo-{gcc,as,ld.bfd}
+  libexec/gcc/{x86_64,aarch64}-linux-cosmo/14.1.0/{cc1,collect2}
+Plain-name aliases (bin/as -> bin/x86_64-linux-cosmo-as, bin/ld.bfd ->
+bin/x86_64-linux-cosmo-ld.bfd) exist on disk during staging/build, but are
+NOT embedded into the final binary (see below); cosmocc-min recreates them
+at runtime instead.
+
+Removed 2026-09-07 (unused by cosmocc-min's pipeline): bin/{x86_64,aarch64}-
+linux-cosmo-{ar,ranlib,nm,objcopy,objdump,strip,addr2line,size,readelf,
+elfedit,ld}. Verified by grepping wrapper/cosmocc-min.c: it only ever execs
+the *-gcc driver directly (which internally finds cc1/collect2/as/ld.bfd via
+-B), plus the host-side fixupobj/apelink/pecheck. None of ar/nm/ranlib/etc.
+are invoked anywhere in the pipeline -- ar/ranlib are only needed to CREATE
+static archives (this pipeline only ever produces executables), and ld
+reads .a archives' symbol index natively without shelling out to ar/nm.
+Plain "ld" (as opposed to ld.bfd) is unused because the wrapper always
+passes -fuse-ld=bfd. Verified empirically: built a trimmed copy of the
+toolchain missing all of these and ran the full compile+link+apelink
+pipeline against it end-to-end -- output was byte-identical to a build
+against the untrimmed toolchain. This was the largest remaining reduction
+after the two-tree consolidation: it removed roughly two thirds of the
+non-cc1/non-libcosmo.a file count per tree.
+Note: readelf and elfedit happened to be byte-identical between the
+x86_64-linux-cosmo and aarch64-linux-cosmo builds (unlike ar/nm/objcopy/
+objdump/strip/addr2line/size, which differ in size despite being logically
+architecture-agnostic tools -- confirmed ar and nm still work correctly on
+the *other* architecture's object files even though the binaries differ
+byte-for-byte, likely due to per-target BFD backend configuration at build
+time). Moot now since none of them are staged at all.
+
+Removed entirely, not staged:
+  bin/{x86_64,aarch64}-linux-cosmo-{c++,c++filt,g++}   (C++ frontend/driver)
+  bin/{x86_64,aarch64}-linux-cosmo-{cc,cpp}             (2026-09-07: unused --
+    cosmocc-min only ever invokes the *-gcc driver directly; cc1 has an
+    integrated preprocessor for normal -c compiles, so the standalone cpp
+    binary is never exec'd, and cc/gcc are the same C driver under different
+    argv[0] names. cc/cpp/gcc were byte-identical copies in the upstream
+    distribution -- not symlinks -- so removing cc+cpp also removed 2 of the
+    3 duplicate copies per tree.)
+  libexec/gcc/.../14.1.0/cc1plus                        (C++ compiler proper)
+  lib/libstdc++.a, lib/libcxx.a                         (C++ standard libs,
+                                                          incl. optlinux/tiny/dbg variants)
+  lib/libgomp.a, lib/libgomp.spec                       (GCC OpenMP runtime)
+  lib/{dbg,optlinux,tiny}/*                             (2026-09-07: alternate
+    cosmo runtime builds for -mdbg/-moptlinux/-mtiny; cosmocc-min never passes
+    those flags or references these paths. dbg/libcosmo.a alone was
+    ~120-130MB per arch, unstripped. Removing all three variants roughly
+    halved each staged toolchain tree.)
+  bin/apelink -> not staged directly; only its assimilated apelink-amd64/
+    apelink-arm64 copies are (see apelink/ above)
+  build/blink/blink-amd64.elf                           (2026-09-07: Blink
+    only ever emulates amd64 guest code and is only ever invoked when the
+    HOST is arm64 -- a blink-amd64.elf would never be exercised by any code
+    path in cosmocc-min, so it was never staged)
+  gcc-arm64-on-amd64/ as a SEPARATE tree from gcc-arm64/ (2026-09-07: this
+    plan originally staged an arm64-native gcc-arm64/ for arm64 hosts AND a
+    separate amd64-native gcc-arm64-on-amd64/ for amd64 hosts. Realized the
+    arm64-native copy was unnecessary once Blink is willing to run either
+    toolchain on an arm64 host -- kept only the amd64-native tree, renamed to
+    gcc-arm64/. This was the single largest size reduction: ~206MB removed.)
+
+Symlink handling (2026-09-07): the plain-name tool aliases (ld, ld.bfd, as,
+ar, nm, objcopy, objdump, ranlib, readelf, size, strip, addr2line, elfedit)
+created during staging are real filesystem symlinks on disk, but
+scripts/embed-assets.py skips them when building the embedded zip payload
+(Python's zipfile.write() follows symlinks and would otherwise store a full
+duplicate copy of the target's content under the alias name -- this was
+costing ~82MB compressed, ~27% of the whole embedded payload, before the
+fix). cosmocc-min's create_tool_aliases() recreates these symlinks itself
+after extracting the embedded assets at runtime.
+
+Not present in this cosmocc build at all (nothing to remove):
+  liblto_plugin*, lto1, libasan*, libtsan*, libubsan* (GCC's own sanitizer
+  runtimes) -- this cosmocc release doesn't ship GCC LTO or GCC sanitizer
+  support. Cosmopolitan's own libc-level sanitizer support (kept) lives in
+  libc.a/libcosmo.a, not as separate GCC runtime libs.
+
+Kept as-is (no C++/LTO/OpenMP content, needed for C compile+link+APE):
+  lib/crt.o, lib/libc.a, lib/libcosmo.a, lib/libm.a, lib/libdl.a,
+  lib/libpthread.a, lib/librt.a, lib/libcrypt.a, lib/libresolv.a,
+  lib/libgcc_s.a, lib/libunwind.a (C-level backtrace/unwind support used by
+  ShowCrashReports, not a C++ exception runtime), lib/ape.lds (amd64) /
+  lib/aarch64.lds (arm64), lib/ape.o, lib/ape-no-modify-self.o
+  include/ (shared, arch-independent headers, copied once, not duplicated
+  per arch)
+
+Linker note:
+  No cosmo-patched gold (ld.gold) exists anywhere in the Cosmopolitan
+  project or the cosmocc release -- verified by grepping the monorepo and
+  inspecting the cosmocc bin/ directory. Cosmopolitan itself is built with
+  ld.bfd. Per decision, `ld.bfd` (staged per-tree above) substitutes for
+  gold throughout this toolchain; see build/gold/NOTE.md.
+
+History note: an earlier iteration of this plan produced two binaries,
+blink-compile.com (Binary A, fat outputs) and blink-embed.com (Binary B,
+amd64-only outputs + embedded Blink). Binary B was dropped entirely
+(2026-09-07) after finding its arm64 auto-relaunch-via-embedded-Blink
+mechanism would require either risky in-place binary patching of apelink's
+generated shell-script polyglot header, or sacrificing Windows/wine
+compatibility. Only blink-compile.com remains.
