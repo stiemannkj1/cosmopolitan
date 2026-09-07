@@ -65,6 +65,16 @@ assemble() {
     "$COSMOCC/bin/assimilate" -x -o "$bootstrap_assets/apelink/${tool}-amd64" "$COSMOCC/bin/$tool"
   done
 
+  # The wrapper checks its own runtime cache (keyed only by
+  # WRAPPER_VERSION, not by content) before even looking at
+  # COSMOCC_MIN_ASSETS -- a cache left "ready" by an unrelated earlier
+  # run (e.g. of the built product, using the real fat/APE assets) would
+  # otherwise get reused here instead of these plain-ELF bootstrap
+  # assets, breaking the non-cosmo bootstrap's execv() the same way a
+  # fat cc1 always does. Clear it so this step is deterministic
+  # regardless of ambient /tmp state.
+  rm -rf "${TMPDIR:-/tmp}/cosmocc-min" "$HOME/.cache/cosmocc-min"
+
   echo "==> [$name] self-hosting: compiling the wrapper into a fat APE via the staged cosmo toolchain"
   rm -f "$out"
   COSMOCC_MIN_ASSETS="$bootstrap_assets" "$bootstrap" -o "$out" "$WRAPPER_SRC"

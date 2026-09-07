@@ -13,13 +13,13 @@ Only Binary A remains. This project now lives under
 `cosmopolitan/third_party/minicosmocc/` on the `minicosmocc` branch (moved
 from a standalone `~/Projects/work/cosmo-toolchain/` working directory).
 
-## Current status
+## Current status: all phases complete
 
-- Phases 0–5 of the original plan are done: environment prep, toolchain
+- Phases 0–7 of the original plan are done: environment prep, toolchain
   acquisition/staging, wrapper implementation, build script, loader-cleanup
-  script (`scripts/clean-ape-loaders.sh`), and the test suite
-  (`tests/a-hello-world.sh`, `tests/a-tinycc.sh`, `tests/run-all.sh`) — see
-  "Phase 5: the test suite" below.
+  script (`scripts/clean-ape-loaders.sh`), the test suite
+  (`tests/a-hello-world.sh`, `tests/a-tinycc.sh`, `tests/run-all.sh`), the
+  bug-fix loop (Phase 6 — see below), and this final report (Phase 7).
 - Everything has been validated repeatedly with full clean-cache builds:
   native amd64, arm64-via-Blink (`qemu-aarch64`), and Wine all produce
   **byte-identical** output for a `malloc`/`free` hello-world, and building
@@ -194,6 +194,55 @@ tinycc's own separately-built runtime. All 8 checks pass.
 
 **`tests/run-all.sh`** — orchestrates both, cleaning APE loaders before
 each. Both currently pass.
+
+## Phase 6: bug-fix loop
+
+No Phase 5 test was failing when this phase started, so there was nothing
+to root-cause against test failures directly. Phase 7's reproducibility
+check (immediately below) did surface one real bug, fixed as part of
+confirming reproducibility: `scripts/_assemble.sh`'s self-hosting build
+step didn't clear the wrapper's own runtime cache first. The wrapper
+checks its cache-readiness (keyed only by version, not content) before
+even looking at `COSMOCC_MIN_ASSETS` — so a cache left "ready" by an
+unrelated earlier run of the *built product* (using the real fat/APE
+assets) would get reused by the *build script's* bootstrap step instead
+of the plain-ELF assets it actually needs, breaking the non-cosmo
+bootstrap's `execv()` the same way any fat `cc1` always does for a
+non-cosmo caller. Fixed by having `_assemble.sh` clear
+`$TMPDIR/cosmocc-min` and `~/.cache/cosmocc-min` before self-hosting,
+making the build deterministic regardless of ambient `/tmp` state left
+by prior manual testing or test-suite runs.
+
+## Phase 7: final report
+
+Two independent, back-to-back runs of `scripts/build-blink-compile.sh`
+(after the Phase 6 fix above) produce **byte-identical** output
+(verified via `sha256sum`) — the build is reproducible given the staged
+`build/` toolchain.
+
+**Final size**: `dist/blink-compile.com` = **72 MB**.
+
+**Final validation matrix** (`tests/run-all.sh`, fresh build, freshly
+loader-cleaned system): **19/19 checks passing** —
+`tests/a-hello-world.sh` 11/11 (the full 3×3 compile-host × run-host
+matrix across amd64-native/arm64-qemu/windows-wine, plus byte-identity
+and loader-reinstallation cross-checks) and `tests/a-tinycc.sh` 8/8
+(building and validating tinycc, a real ~30K-line C project, across the
+same three platforms).
+
+One caveat on "clean checkout of Phase 0" reproducibility: this
+confirms the *wrapper build script* is deterministic given an
+already-staged `build/` toolchain. Staging `build/` itself from a fresh
+`cosmocc` release (the `assimilate`/zero+trim/strip sequence described
+throughout this document) was done as a long sequence of interactive
+commands over the course of this work, not captured into a single
+`stage-toolchain.sh` script — `scripts/strip-manifest.txt` fully
+documents what was done and why, and `scripts/truncate-fat-remnants.py`
+automates the zero+trim step specifically, but re-deriving `build/` from
+zero today would mean re-following the manifest by hand rather than
+running one command. Automating that into a single script is the most
+concrete remaining follow-up if this project needs to survive a
+`cosmocc` version bump.
 
 ## Known limitations / next steps
 
