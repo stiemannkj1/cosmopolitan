@@ -4,11 +4,11 @@
 # (without extension), e.g. "blink-compile".
 set -euo pipefail
 
-ROOT="$HOME/Projects/work/cosmo-toolchain"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD="$ROOT/build"
 DIST="$ROOT/dist"
 WRAPPER_SRC="$ROOT/wrapper/cosmocc-min.c"
-COSMOCC="$HOME/Projects/work/cosmopolitan/.cosmocc/current"
+COSMOCC="$(cd "$ROOT/../../.cosmocc/current" && pwd)"
 
 assemble() {
   local name="$1"

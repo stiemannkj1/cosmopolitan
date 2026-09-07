@@ -6,24 +6,25 @@ on the prebuilt `cosmocc` 4.0.2 release (never built from source), stripped
 to C-only, and packaged so the wrapper carries its own toolchain as embedded
 assets.
 
-Original plan lived at `../cosmopolitan/MINIMAL_COSMO_COMPILER_GCC_PLAN.md`
-and called for two binaries (`blink-compile` / `blink-embed`); Binary B was
-designed, built, and then deliberately dropped (see below). Only Binary A
-remains.
+Original plan lives at `../../MINIMAL_COSMO_COMPILER_GCC_PLAN.md` (relative
+to this file) and called for two binaries (`blink-compile` / `blink-embed`);
+Binary B was designed, built, and then deliberately dropped (see below).
+Only Binary A remains. This project now lives under
+`cosmopolitan/third_party/minicosmocc/` on the `minicosmocc` branch (moved
+from a standalone `~/Projects/work/cosmo-toolchain/` working directory).
 
 ## Current status
 
-- Phases 0–4 of the original plan are done: environment prep, toolchain
+- Phases 0–5 of the original plan are done: environment prep, toolchain
   acquisition/staging, wrapper implementation, build script, loader-cleanup
-  script (`scripts/clean-ape-loaders.sh`).
-- Phase 5 (the actual hello-world/tinycc test suite across amd64/arm64/wine)
-  was **not written** — `tests/` is still empty. Most of this effort went
-  into architecture decisions and a size-optimization pass that turned out
-  to be substantial, plus a deep bug hunt to make Wine compilation actually
-  work. Writing `tests/a-hello-world.sh` etc. is the natural next step.
-- Everything below has been validated repeatedly with full clean-cache
-  builds: native amd64, arm64-via-Blink (`qemu-aarch64`), and Wine all
-  produce **byte-identical** output for a `malloc`/`free` hello-world.
+  script (`scripts/clean-ape-loaders.sh`), and the test suite
+  (`tests/a-hello-world.sh`, `tests/a-tinycc.sh`, `tests/run-all.sh`) — see
+  "Phase 5: the test suite" below.
+- Everything has been validated repeatedly with full clean-cache builds:
+  native amd64, arm64-via-Blink (`qemu-aarch64`), and Wine all produce
+  **byte-identical** output for a `malloc`/`free` hello-world, and building
+  tinycc (a real ~30K-line, 24-file C project) works identically across all
+  three.
 
 ## Architecture
 
@@ -161,12 +162,41 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
    `$TMPDIR`-derived paths (`/tmp/...`) are reliable. The wrapper's cache
    now lives under `$TMPDIR/cosmocc-min/<version>/`, not `~/.cache/...`.
 
+## Phase 5: the test suite
+
+Only §5.1 (Binary A tests) and §5.3 (cross-check) from the plan apply,
+since Binary B no longer exists.
+
+**`tests/a-hello-world.sh`** — the full 3×3 matrix from the plan: compile a
+`malloc`/`free` hello-world on {amd64-native, arm64-via-qemu+Blink,
+windows-via-wine}, then run each resulting binary on all three of the same
+platforms (9 combinations), plus a cross-compiler-host byte-identical-output
+check and the loader-reinstallation cross-check. All 11 checks pass.
+
+**`tests/a-tinycc.sh`** — builds tinycc (a real ~30K-line, 24-file C
+project that happens to be a unity build, `tcc.c` → ... → every other
+source file, which suits this wrapper's one-source-file-per-invocation
+design well) with `blink-compile.com`, confirms the built `tcc` reports its
+version correctly on all three platforms, and validates self-compile
+(`tcc -c tcc.c -o out.o`) determinism between amd64-native and
+windows-wine. The arm64-qemu self-compile leg is intentionally excluded:
+an aarch64-native `tcc` slice reading this host's x86_64-specific glibc
+headers hits an architecture-mismatched macro path in `gnu/stubs.h` (glibc
+header logic keys off the *compiler binary's own* CPU identity, not its
+output target) — a tinycc+glibc header limitation, not a wrapper defect;
+the "tcc -v" check already separately confirms the arm64 slice itself
+works correctly. Building tinycc's optional bounds-checking runtime
+(`lib/bcheck.c`) also fails on this host (`__malloc_hook` was removed from
+modern glibc) — an unrelated, pre-existing tinycc/glibc incompatibility,
+so the test validates what's actually in scope (building tinycc, and
+compile-only self-hosting) rather than full link+`-run` execution via
+tinycc's own separately-built runtime. All 8 checks pass.
+
+**`tests/run-all.sh`** — orchestrates both, cleaning APE loaders before
+each. Both currently pass.
+
 ## Known limitations / next steps
 
-- `tests/` is empty. Phase 5 (write `tests/a-hello-world.sh`,
-  `tests/a-tinycc.sh`, `tests/run-all.sh`, the pass/fail matrix across
-  {amd64 native, arm64 qemu, windows wine} × {compiler-runs-here,
-  output-runs-there}) was never implemented.
 - `--target=amd64|arm64` (single-arch output, skipping the fat join) has a
   known bug in `apelink_join()` — noted but not revisited since it's not
   exercised by the plan's actual test matrix (which is about the fat-binary
@@ -174,21 +204,20 @@ work end-to-end under Wine, beyond just avoiding `posix_spawn`:
 - This wrapper supports exactly one C-only, single-source-file compile per
   invocation, against exactly one cosmo runtime configuration. It is not,
   and was never meant to be, a general-purpose gcc replacement.
-- `wrapper/` has its own small local git repo (separate from the
-  `cosmopolitan` monorepo) with 8 commits tracking `cosmocc-min.c`'s
-  evolution; `scripts/` was never under version control (edited directly on
-  disk). Moving both into `cosmopolitan/third_party/minicosmocc/` (on the
-  existing `minicosmocc` branch) with history preserved is a planned but
-  not-yet-executed follow-up.
 - `build/` (staged toolchain assets) and `dist/` (built output) are
   generated/fetched artifacts, not source — they're reproducible from a
-  fresh `cosmocc` release via `scripts/build-blink-compile.sh` and were
-  deliberately not committed anywhere.
+  fresh `cosmocc` release via `scripts/build-blink-compile.sh`. `build/` is
+  gitignored; `dist/` is currently untracked (not yet committed or
+  ignored) — worth a deliberate decision one way or the other.
+- A wine-compiled output's executable bit doesn't survive Wine's
+  Windows-translation layer (Windows has no equivalent permission concept)
+  — a real user transferring such a binary to Linux/arm64 needs
+  `chmod +x` first, same as `tests/a-hello-world.sh` does internally.
 
 ## Directory structure
 
 ```
-cosmo-toolchain/
+third_party/minicosmocc/
   wrapper/cosmocc-min.c       the whole compiler wrapper (~650 lines)
   scripts/
     build-blink-compile.sh    entry point: builds dist/blink-compile.com
@@ -197,12 +226,15 @@ cosmo-toolchain/
     truncate-fat-remnants.py  the assimilate-waste fix (idempotent, re-run after re-staging)
     clean-ape-loaders.sh      removes global/user/temp APE loaders before tests
     strip-manifest.txt        full record of what was stripped/kept and why
-  build/                      staged toolchain (generated, not committed)
+  build/                      staged toolchain (generated, gitignored)
     gcc-amd64/, gcc-arm64/    cc1, as, ld.bfd (+ lib/, no gcc or collect2)
     apelink/                  apelink, fixupobj, pecheck (amd64-native only)
     blink/                    blink-arm64.elf only
     include/                  shared cosmo headers
     gold/NOTE.md              no gold linker exists anywhere; ld.bfd substitutes
-  dist/blink-compile.com      the built product (generated, not committed)
-  tests/                      empty -- Phase 5 not yet implemented
+  dist/blink-compile.com      the built product (generated, currently untracked)
+  tests/
+    a-hello-world.sh          Phase 5.1.1 (11 checks, all passing)
+    a-tinycc.sh               Phase 5.1.2 (8 checks, all passing)
+    run-all.sh                orchestrates both
 ```
