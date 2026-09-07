@@ -367,15 +367,67 @@ unchanged; nothing was silently dropped in the merge. Re-validated with
 a full `scripts/minicosmocc.py test` run after the consolidation:
 19/19 checks passing.
 
+## Fixed: crash on Apple Silicon macOS hosts (Blink page-alignment)
+
+A real user report: running `minicosmocc.com` on an arm64 Mac failed
+immediately with `ape error: .../blink-arm64.elf: ELF segments overlap
+each others virtual memory`. Root-caused precisely (`ape/ape-m1.c`,
+Cosmopolitan's macOS-Silicon loader, compiled on the fly via the user's
+own `cc`): it validates that no two `PT_LOAD` segments' *16KB-page-
+rounded* address ranges overlap, since Apple Silicon uses 16KB pages.
+The vendored `blink-arm64.elf` was built with ordinary 4KB alignment
+(standard for Linux), and its two segments, while non-overlapping at
+4KB granularity, do overlap once rounded to 16KB pages — verified this
+exactly by computing both roundings by hand from `readelf -lW`'s
+output. This never showed up before because this project had never
+actually been run on a real macOS host until this report; Linux (via
+`qemu-aarch64`) and Windows (via Wine) don't exercise this loader path
+at all.
+
+Fixed by rebuilding Blink from source (`blink-1.1.0`, upstream's latest
+release tarball) as a real aarch64 cross-compile, using a downloaded
+Bootlin `aarch64--glibc--stable-2024.02-1` toolchain (Cosmopolitan's own
+`aarch64-linux-cosmo-gcc` doesn't work here: it's built `--without-headers`,
+meaning it only knows how to compile against Cosmopolitan's own libc
+headers, not the standard Linux/glibc ones Blink's source expects), with
+`LDFLAGS="-static -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"`
+overriding Blink's own default 64KB page-size flags (later flags win for
+the same `-z` key). `./configure`'s own feature-detection compiles and
+*runs* small test binaries, which only produced accurate results because
+this host has `qemu-aarch64` registered in `binfmt_misc`, transparently
+executing the cross-compiled aarch64 test binaries as if native.
+
+Verified two ways: statically, by computing the exact same 16KB-page
+overlap check `ape-m1.c` performs on the new binary's segments (no
+overlap, and the `p_vaddr`/`p_offset` congruence-mod-pagesize check
+also passes) — the part that's actually guaranteed to matter on macOS;
+and functionally, by running the new Blink under `qemu-aarch64` to
+emulate the full `cc1`/`as`/`ld.bfd`/`apelink` pipeline end-to-end,
+producing a correct, working output binary, plus a full
+`scripts/minicosmocc.py test` run: 19/19 passing. What's *not*
+verified, because no Apple Silicon hardware was available: actually
+running the new `blink-arm64.elf` through `ape-m1.c` on real macOS —
+the static analysis above is why there's high confidence it now
+passes, not a live confirmation.
+
+Net effect: `dist/minicosmocc.com` grew from 72.0MB to 72.4MB (the new
+Blink build, even zero-trimmed, is larger than the old one — likely a
+newer Blink release plus different default build flags; not
+investigated further since the size delta is small).
+
 ## Known limitations / next steps
 
-- Blink (`vendor/blink-arm64.elf`) is a pinned, vendored prebuilt binary,
-  not something `scripts/minicosmocc.py` builds from source: jart/blink's
-  GitHub releases ship only a source tarball (no prebuilt aarch64 asset),
-  and this build host has no aarch64 cross-compiler to build one. If
-  Blink ever needs a version bump, a new `blink-arm64.elf` has to be
-  built elsewhere (a real aarch64 host, or a cross-compiling one) and
-  dropped into `vendor/` by hand.
+- Blink (`vendor/blink-arm64.elf`) is vendored as a built binary rather
+  than built fresh by `scripts/minicosmocc.py` itself, but building it
+  turned out to be possible after all (see previous section) — a
+  downloaded Bootlin `aarch64--glibc--stable` toolchain, not
+  Cosmopolitan's own `aarch64-linux-cosmo-gcc`, plus `./configure` and
+  `make o` from Blink's own build system with `-z max-page-size=16384`
+  appended to `LDFLAGS`. Automating that download-and-build into
+  `stage_toolchain()` (matching how `apelink`/the ape loader are already
+  built from source) is a reasonable follow-up if Blink needs another
+  version bump; not done here since it's a larger change than this fix
+  called for.
 - `--target=amd64|arm64` (single-arch output, skipping the fat join) has a
   known bug in `apelink_join()` — noted but not revisited since it's not
   exercised by the plan's actual test matrix (which is about the fat-binary

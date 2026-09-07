@@ -23,8 +23,16 @@ Current staged layout (build/):
               there). fixupobj/pecheck remain prebuilt.
   blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
               code -- see below for why no blink-amd64.elf is needed; vendored
-              as a prebuilt binary, see vendor/ -- no upstream prebuilt release
-              and no aarch64 cross-compiler on this host to build one)
+              as a built binary, see vendor/ -- no upstream prebuilt release,
+              so built from Blink's own source (blink-1.1.0) using a
+              downloaded Bootlin aarch64--glibc--stable cross-toolchain
+              (Cosmopolitan's own aarch64-linux-cosmo-gcc doesn't work for
+              this: it's --without-headers, only usable against
+              Cosmopolitan's own libc headers, not Blink's expected
+              standard Linux/glibc ones), with
+              LDFLAGS="-static -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
+              -- see SUMMARY.md, "Fixed: crash on Apple Silicon macOS
+              hosts", for why that specific flag mattered)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
 
