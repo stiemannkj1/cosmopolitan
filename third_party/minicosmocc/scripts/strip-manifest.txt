@@ -1,13 +1,24 @@
 Strip manifest for minimal cosmo/APE C-only toolchain
 Source: ~/Projects/work/cosmopolitan/.cosmocc/4.0.2 (Cosmopolitan cosmocc release, GCC 14.1.0)
 
+This is a historical record of what was stripped/kept and why. build/ is
+now re-derived from scratch by scripts/stage-toolchain.sh (chained with a
+full build+test by scripts/rebuild-from-scratch.sh) rather than by hand --
+this file documents the reasoning baked into that script, not a set of
+manual steps still left to run.
+
 Current staged layout (build/):
   gcc-amd64/  x86_64-linux-cosmo toolchain, amd64-native binaries, targets amd64
   gcc-arm64/  aarch64-linux-cosmo toolchain, amd64-native binaries, targets arm64
-  apelink/    apelink/fixupobj/pecheck, one amd64-native + one arm64-native copy
-              of each (assimilate -x / -a), plus the ape-*.elf loader stubs
+  apelink/    apelink/fixupobj/pecheck, amd64-native only (2026-09-07: an
+              arm64-native copy was also staged originally, then dropped for
+              the same reason as gcc-arm64-on-amd64/ below -- Blink already
+              runs the amd64-native copy on arm64 hosts), plus the ape-*.elf
+              loader stubs
   blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
-              code -- see below for why no blink-amd64.elf is needed)
+              code -- see below for why no blink-amd64.elf is needed; vendored
+              as a prebuilt binary, see vendor/ -- no upstream prebuilt release
+              and no aarch64 cross-compiler on this host to build one)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
 
@@ -96,8 +107,8 @@ Removed entirely, not staged:
     those flags or references these paths. dbg/libcosmo.a alone was
     ~120-130MB per arch, unstripped. Removing all three variants roughly
     halved each staged toolchain tree.)
-  bin/apelink -> not staged directly; only its assimilated apelink-amd64/
-    apelink-arm64 copies are (see apelink/ above)
+  bin/apelink -> not staged directly; only its assimilated apelink-amd64
+    copy is (see apelink/ above)
   build/blink/blink-amd64.elf                           (2026-09-07: Blink
     only ever emulates amd64 guest code and is only ever invoked when the
     HOST is arm64 -- a blink-amd64.elf would never be exercised by any code

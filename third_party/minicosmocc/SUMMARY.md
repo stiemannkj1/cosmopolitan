@@ -26,6 +26,17 @@ from a standalone `~/Projects/work/cosmo-toolchain/` working directory).
   tinycc (a real ~30K-line, 24-file C project) works identically across all
   three.
 
+## Rebuilding from scratch
+
+```
+scripts/rebuild-from-scratch.sh
+```
+Wipes `build/` and `dist/`, re-stages `build/` from the `cosmocc` release
+(downloading it if not already cached under `../../.cosmocc/`), rebuilds
+`dist/blink-compile.com`, and runs the full test suite. Set
+`COSMOCC_VERSION` to stage from a different release. See "Full
+clean-checkout reproducibility" below for what this was validated against.
+
 ## Architecture
 
 **Pipeline** (`wrapper/cosmocc-min.c`, ~650 lines):
@@ -128,11 +139,12 @@ something specific to these particular tools) accounted for a further
 ~2.4MB per large file. Where APE-ness needed to be preserved (see next
 section), that trailing content is dropped in addition to zeroing the
 unused slice, recovering size that a naive "just zero the slice" approach
-would otherwise leave behind — see `scripts/truncate-fat-remnants.py`.
+would otherwise leave behind — see `scripts/zero-trim.py`.
 
-`scripts/truncate-fat-remnants.py` is idempotent and needs to be re-run any
-time the toolchain is re-staged from a fresh `cosmocc` release, since a
-fresh `assimilate` run reintroduces the same waste.
+`scripts/zero-trim.py` is invoked by `scripts/stage-toolchain.sh`, which
+re-derives `build/` from a fresh `cosmocc` release, so re-staging from a
+version bump always re-applies the zero+trim step rather than needing a
+separate manual pass.
 
 ## Windows/Wine compilation: the real fix
 
@@ -230,22 +242,32 @@ and loader-reinstallation cross-checks) and `tests/a-tinycc.sh` 8/8
 (building and validating tinycc, a real ~30K-line C project, across the
 same three platforms).
 
-One caveat on "clean checkout of Phase 0" reproducibility: this
-confirms the *wrapper build script* is deterministic given an
-already-staged `build/` toolchain. Staging `build/` itself from a fresh
-`cosmocc` release (the `assimilate`/zero+trim/strip sequence described
-throughout this document) was done as a long sequence of interactive
-commands over the course of this work, not captured into a single
-`stage-toolchain.sh` script — `scripts/strip-manifest.txt` fully
-documents what was done and why, and `scripts/truncate-fat-remnants.py`
-automates the zero+trim step specifically, but re-deriving `build/` from
-zero today would mean re-following the manifest by hand rather than
-running one command. Automating that into a single script is the most
-concrete remaining follow-up if this project needs to survive a
-`cosmocc` version bump.
+**Full clean-checkout reproducibility**: `scripts/stage-toolchain.sh` now
+automates the whole `build/` derivation (download-or-reuse the `cosmocc`
+release, assimilate-measure + zero+trim every dual-arch tool, stage the
+filtered `lib/`/`include/` trees, install the vendored `blink-arm64.elf`,
+write `gold/NOTE.md`) in one command, and `scripts/rebuild-from-scratch.sh`
+chains it with the build and the full test suite. Verified by wiping
+`build/` and `dist/` entirely and running `rebuild-from-scratch.sh` fresh:
+it re-staged `build/` byte-for-byte equivalent to the prior hand-staged
+version (diffed directly — only stale cruft from earlier manual staging
+was missing, nothing load-bearing), reassembled `dist/blink-compile.com`
+at the same 72MB, and passed all 19/19 test-suite checks. `cosmocc` itself
+is still never built from source, only downloaded — consistent with the
+project's original ground rule — and Blink is vendored as a prebuilt
+binary (`vendor/blink-arm64.elf`) rather than built from source, since
+upstream ships no prebuilt aarch64 release asset and this host has no
+aarch64 cross-compiler to build it with.
 
 ## Known limitations / next steps
 
+- Blink (`vendor/blink-arm64.elf`) is a pinned, vendored prebuilt binary,
+  not something `stage-toolchain.sh` builds from source: jart/blink's
+  GitHub releases ship only a source tarball (no prebuilt aarch64 asset),
+  and this build host has no aarch64 cross-compiler to build one. If
+  Blink ever needs a version bump, a new `blink-arm64.elf` has to be
+  built elsewhere (a real aarch64 host, or a cross-compiling one) and
+  dropped into `vendor/` by hand.
 - `--target=amd64|arm64` (single-arch output, skipping the fat join) has a
   known bug in `apelink_join()` — noted but not revisited since it's not
   exercised by the plan's actual test matrix (which is about the fat-binary
@@ -268,11 +290,14 @@ concrete remaining follow-up if this project needs to survive a
 ```
 third_party/minicosmocc/
   wrapper/cosmocc-min.c       the whole compiler wrapper (~650 lines)
+  vendor/blink-arm64.elf      pinned prebuilt Blink binary (see Known limitations)
   scripts/
+    rebuild-from-scratch.sh  orchestrator: stage -> build -> test, one command
+    stage-toolchain.sh       derives build/ from a cosmocc release (download-or-reuse)
+    zero-trim.py             the assimilate-waste + trailing-zip-content fix
     build-blink-compile.sh    entry point: builds dist/blink-compile.com
     _assemble.sh              shared build logic (bootstrap, embed, verify)
     embed-assets.py           zip-embeds staged assets into the built wrapper
-    truncate-fat-remnants.py  the assimilate-waste fix (idempotent, re-run after re-staging)
     clean-ape-loaders.sh      removes global/user/temp APE loaders before tests
     strip-manifest.txt        full record of what was stripped/kept and why
   build/                      staged toolchain (generated, gitignored)
