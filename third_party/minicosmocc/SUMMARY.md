@@ -17,6 +17,16 @@ Only Binary A remains. This project now lives under
 (moved from a standalone `~/Projects/work/cosmo-toolchain/` working
 directory, then rebased directly onto the `4.0.2` release tag).
 
+## Renamed to minicosmocc
+
+The wrapper source (`wrapper/cosmocc-min.c` → `wrapper/minicosmocc.c`),
+the built binary (`dist/blink-compile.com` → `dist/minicosmocc.com`),
+and every internal reference (user-facing strings, the runtime cache
+directory name, docs) were renamed in one pass so the project's name,
+its source file, and its output binary all agree. Purely a rename, no
+behavior change; the full test suite (see "Rebuilding from scratch")
+still passes 19/19 after it.
+
 ## Current status: all phases complete
 
 - Phases 0–7 of the original plan are done: environment prep, toolchain
