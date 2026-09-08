@@ -43,9 +43,19 @@ Current staged layout (build/):
               0x23000000 default -- not a guess, it's the exact address
               Cosmopolitan's own ape/aarch64.lds uses for every arm64
               binary this toolchain links, already proven to work
-              through this same loader in production) -- see
-              SUMMARY.md, "Fixed: crash on Apple Silicon macOS hosts",
-              for the three rounds of bugs this fixes and why each flag
+              through this same loader in production), plus CFLAGS
+              -DMAP_JIT=0x800 (Blink's own blink/jit.c picks between
+              mmap(MAP_JIT|...) and a plain mprotect() for making its
+              JIT-compiled code executable based on #ifdef MAP_JIT --
+              a macOS-only <sys/mman.h> constant a Linux cross-compiler
+              never defines, so without this override Blink silently
+              compiles in the mprotect() path, which Apple Silicon's
+              hardened runtime blocks; 0x800 matches Cosmopolitan's own
+              libc/sysv/consts.sh MAP_JIT value, and is a pre-existing
+              Linux no-op flag -- MAP_DENYWRITE -- so safe to test
+              under qemu-aarch64 here too) -- see SUMMARY.md, "Fixed:
+              crash on Apple Silicon macOS hosts",
+              for the four rounds of bugs this fixes and why each flag
               matters)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem

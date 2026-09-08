@@ -426,27 +426,58 @@ regardless of how self-contained the binary is; the alignment fix from
 the first attempt was correct, but pairing it with PIE instead of a
 better-chosen fixed address was the wrong direction.
 
-**Actual fix**: back to a plain `ET_EXEC` (`--static`, no `PT_DYNAMIC`,
-no `PT_INTERP`) — but instead of Blink's own default fixed address
-(`0x23000000`, the one that collided with something on real Apple
-Silicon in the first attempt), linked at `0x800000000` (32GB) via
-`-Wl,-Ttext-segment=0x800000000`. That's not a guess: it's the exact
-address Cosmopolitan's *own* `ape/aarch64.lds` uses as the text-segment
-base for every arm64 binary this toolchain (or any cosmocc user) links —
-a convention already proven to work through this exact loader on real
-Apple Silicon in production, just never applied to Blink's own build
-before now.
+**Third attempt (also incomplete)**: back to a plain `ET_EXEC`
+(`--static`, no `PT_DYNAMIC`, no `PT_INTERP`) — but instead of Blink's
+own default fixed address (`0x23000000`, the one that collided with
+something on real Apple Silicon in the first attempt), linked at
+`0x800000000` (32GB) via `-Wl,-Ttext-segment=0x800000000`. Not a
+guess: it's the exact address Cosmopolitan's *own* `ape/aarch64.lds`
+uses as the text-segment base for every arm64 binary this toolchain
+(or any cosmocc user) links, already proven to work through this exact
+loader on real Apple Silicon in production. Verified the same way as
+both earlier attempts — overlap/congruence checks, zero `PT_DYNAMIC`/
+`PT_INTERP`, a full functional `qemu-aarch64` run, `scripts/minicosmocc.py
+test` 40/40 — and it did get past the loader this time (no `ape error:`
+at all). But the *compile itself* then failed silently: our wrapper's
+own `minicosmocc: command failed: .../blink-arm64.elf .../cc1 ...`,
+with no output from Blink at all — a crash (SIGSEGV/SIGBUS/SIGILL),
+not a clean nonzero exit.
 
-Verified the same three ways as both earlier attempts: the 16KB-page
-overlap and `p_vaddr`/`p_offset` congruence checks (both pass), zero
-`PT_DYNAMIC`/`PT_INTERP` entries this time, and a full functional run
-under `qemu-aarch64` (emulating `cc1`/`as`/`ld.bfd`/`apelink` end to
-end) plus `scripts/minicosmocc.py test`: 40/40 passing. Given the first
-two attempts each looked equally solid under this same battery of
-checks and each still missed a real bug on actual hardware, this is
-reported as high confidence, not a live confirmation — treat it as
-unverified on real Apple Silicon until a report comes back saying
-otherwise.
+Root cause, found in Blink's own source (`blink/jit.c`, `PrepareJitMemory()`):
+`#ifdef MAP_JIT` selects between two ways of making Blink's JIT-compiled
+code executable — `mmap(..., MAP_JIT | ...)` on Apple Silicon (required;
+Apple's hardened runtime only permits RWX memory through this specific
+flag) versus a plain `mprotect()` everywhere else. `MAP_JIT` is a macOS-only
+`<sys/mman.h>` constant with no Linux equivalent, so cross-compiling with
+a Linux toolchain's headers silently compiles in the *wrong* branch for
+where the binary will actually run — the preprocessor has no way to know
+the real target OS in this unusual "compile with one OS's headers, run
+under another OS's manually-implemented ELF loader" scenario. The
+resulting `mprotect()`-based W→X transition is exactly what Apple Silicon's
+hardened runtime blocks for a plain, unsigned/ad-hoc-signed binary,
+consistent with a silent crash the moment Blink's JIT tries to run
+compiled code (i.e., the moment it starts actually emulating `cc1`,
+not while merely loading).
+
+**Actual fix**: added `-DMAP_JIT=0x800` to `CFLAGS`, forcing the
+`#ifdef MAP_JIT` branch to compile in regardless of which OS's headers
+built it — `0x800` is Apple's real `MAP_JIT` value (confirmed against
+Cosmopolitan's own `libc/sysv/consts.sh`, which defines the same
+constant for its own dlopen JIT-memory handling). Safe to test under
+Linux/`qemu-aarch64` here specifically because bit `0x800` in Linux's
+own `mmap` flags is `MAP_DENYWRITE`, a legacy flag the kernel has
+silently ignored for years — so passing it doesn't change Linux
+behavior at all, while being the flag that matters on real macOS.
+
+Verified the same battery as every prior attempt (alignment, zero
+`PT_DYNAMIC`/`PT_INTERP`), plus specifically exercising the JIT path
+this time (a real `malloc`/`snprintf` program compiled and run through
+Blink with JIT enabled, the default — not just `-v`, which doesn't
+touch JIT at all), and a full `scripts/minicosmocc.py test`: 40/40
+passing. Given every one of the first three attempts looked equally
+solid under this same verification and each still missed a real bug
+on actual hardware, this is reported as high confidence, not a live
+confirmation.
 
 Net effect: `dist/minicosmocc.com` grew from 72.0MB to 72.5MB (the new
 Blink build, even zero-trimmed, is larger than the old one — likely a
