@@ -406,29 +406,47 @@ reproducible in this environment (no macOS/Apple Silicon hardware), so
 diagnosed from the crash message and Blink's own `configure` logic
 rather than direct observation.
 
-**Actual fix**: rebuilt Blink as `-static-pie` instead of plain
-`-static` — self-contained (no dynamic linker needed, still runs
-standalone under `qemu-aarch64` with zero `NEEDED`/`INTERP` entries)
-*and* `ET_DYN`, so `ape-m1.c` maps it via `mmap(0, ..., MAP_ANONYMOUS)`
-(letting the OS choose a safe address) rather than a hardcoded
+**Second attempt (also incomplete)**: rebuilt Blink as `-static-pie`
+instead of plain `-static` — self-contained (zero `NEEDED`/`INTERP`
+entries) *and* `ET_DYN`, so `ape-m1.c` maps it via `mmap(0, ...,
+MAP_ANONYMOUS)` (an OS-chosen address) instead of a hardcoded
 `MAP_FIXED` request — the ASLR-cooperative path Blink's own `configure`
-comment says PIE exists for in the first place. Needed the Bootlin
-toolchain's bundled sysroot (`QEMU_LD_PREFIX` pointed at it) so
-`./configure`'s own feature-detection could dynamically link and run
-its test binaries under `qemu-aarch64` during the one-time *build*,
-even though the final artifact needs no dynamic linking at runtime.
+comment says PIE exists for. Verified statically (overlap/congruence
+checks) and functionally (a full run under `qemu-aarch64` emulating
+`cc1`/`as`/`ld.bfd`/`apelink`, plus `scripts/minicosmocc.py test`,
+40/40) — all looked solid, same as the first attempt. The user's next
+real-hardware test turned up a *third* crash: `ape error:
+.../blink-arm64.elf: ELF has PT_DYNAMIC which isn't supported`.
+`ape-m1.c` (`ape/ape-m1.c:857`) flatly rejects *any* ELF with a
+`PT_DYNAMIC` segment, full stop — and a `-static-pie` binary
+necessarily has one (glibc's static-PIE startup needs it to process
+its own `R_*_RELATIVE` relocations, even with zero external library
+dependencies). So `ET_DYN` itself was never viable for this loader,
+regardless of how self-contained the binary is; the alignment fix from
+the first attempt was correct, but pairing it with PIE instead of a
+better-chosen fixed address was the wrong direction.
 
-Verified three ways: statically, by recomputing the 16KB-page overlap
-and `p_vaddr`/`p_offset` congruence checks on the new binary's segments
-(both pass); by confirming zero `NEEDED`/`INTERP` entries and that it
-runs standalone with no sysroot at all; and functionally, running the
-new Blink under `qemu-aarch64` to emulate the full `cc1`/`as`/`ld.bfd`/
-`apelink` pipeline end-to-end, plus a full `scripts/minicosmocc.py test`
-run: 40/40 checks passing. What's *not* verified, because no Apple
-Silicon hardware was available: actually running it through `ape-m1.c`
-on real macOS — the first fix's static verification looked equally solid
-at the time and still missed the second bug, so treat this as high
-confidence, not a live confirmation, until a real report comes back.
+**Actual fix**: back to a plain `ET_EXEC` (`--static`, no `PT_DYNAMIC`,
+no `PT_INTERP`) — but instead of Blink's own default fixed address
+(`0x23000000`, the one that collided with something on real Apple
+Silicon in the first attempt), linked at `0x800000000` (32GB) via
+`-Wl,-Ttext-segment=0x800000000`. That's not a guess: it's the exact
+address Cosmopolitan's *own* `ape/aarch64.lds` uses as the text-segment
+base for every arm64 binary this toolchain (or any cosmocc user) links —
+a convention already proven to work through this exact loader on real
+Apple Silicon in production, just never applied to Blink's own build
+before now.
+
+Verified the same three ways as both earlier attempts: the 16KB-page
+overlap and `p_vaddr`/`p_offset` congruence checks (both pass), zero
+`PT_DYNAMIC`/`PT_INTERP` entries this time, and a full functional run
+under `qemu-aarch64` (emulating `cc1`/`as`/`ld.bfd`/`apelink` end to
+end) plus `scripts/minicosmocc.py test`: 40/40 passing. Given the first
+two attempts each looked equally solid under this same battery of
+checks and each still missed a real bug on actual hardware, this is
+reported as high confidence, not a live confirmation — treat it as
+unverified on real Apple Silicon until a report comes back saying
+otherwise.
 
 Net effect: `dist/minicosmocc.com` grew from 72.0MB to 72.5MB (the new
 Blink build, even zero-trimmed, is larger than the old one — likely a

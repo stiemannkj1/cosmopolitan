@@ -29,16 +29,24 @@ Current staged layout (build/):
               (Cosmopolitan's own aarch64-linux-cosmo-gcc doesn't work for
               this: it's --without-headers, only usable against
               Cosmopolitan's own libc headers, not Blink's expected
-              standard Linux/glibc ones), configured WITHOUT --static so
-              Blink's own configure picks its preferred -fpie/-pie build
-              instead of a hardcoded-address fallback, with CFLAGS/LDFLAGS
-              forcing -static-pie (self-contained, no dynamic linker
-              needed at runtime, but still ET_DYN so the macOS loader maps
-              it at an OS-chosen address instead of a fixed one) plus
-              -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 for
-              16KB-page-safe segment alignment -- see SUMMARY.md, "Fixed:
-              crash on Apple Silicon macOS hosts", for the two rounds of
-              bugs this fixes and why each flag matters)
+              standard Linux/glibc ones), configured WITH --static (a
+              PIE/-static-pie build was tried and reverted: ape-m1.c
+              flatly rejects any ELF with a PT_DYNAMIC segment, which a
+              static-pie binary always has for its own self-relocation,
+              regardless of whether it has any actual library
+              dependencies) -- a plain ET_EXEC, no PT_DYNAMIC/PT_INTERP
+              at all, with LDFLAGS overriding both Blink's default
+              64KB page-size flags (-Wl,-z,max-page-size=16384
+              -Wl,-z,common-page-size=16384, for 16KB-page-safe segment
+              alignment) and its default fixed load address
+              (-Wl,-Ttext-segment=0x800000000, replacing Blink's own
+              0x23000000 default -- not a guess, it's the exact address
+              Cosmopolitan's own ape/aarch64.lds uses for every arm64
+              binary this toolchain links, already proven to work
+              through this same loader in production) -- see
+              SUMMARY.md, "Fixed: crash on Apple Silicon macOS hosts",
+              for the three rounds of bugs this fixes and why each flag
+              matters)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
 
