@@ -384,33 +384,53 @@ actually been run on a real macOS host until this report; Linux (via
 `qemu-aarch64`) and Windows (via Wine) don't exercise this loader path
 at all.
 
-Fixed by rebuilding Blink from source (`blink-1.1.0`, upstream's latest
-release tarball) as a real aarch64 cross-compile, using a downloaded
-Bootlin `aarch64--glibc--stable-2024.02-1` toolchain (Cosmopolitan's own
-`aarch64-linux-cosmo-gcc` doesn't work here: it's built `--without-headers`,
-meaning it only knows how to compile against Cosmopolitan's own libc
-headers, not the standard Linux/glibc ones Blink's source expects), with
-`LDFLAGS="-static -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"`
-overriding Blink's own default 64KB page-size flags (later flags win for
-the same `-z` key). `./configure`'s own feature-detection compiles and
-*runs* small test binaries, which only produced accurate results because
-this host has `qemu-aarch64` registered in `binfmt_misc`, transparently
-executing the cross-compiled aarch64 test binaries as if native.
+**First attempt (incomplete)**: rebuilt Blink from source (`blink-1.1.0`)
+as a `--static` aarch64 cross-compile (Bootlin `aarch64--glibc--stable-2024.02-1`
+toolchain — Cosmopolitan's own `aarch64-linux-cosmo-gcc` doesn't work
+here, it's built `--without-headers` and only knows how to compile
+against Cosmopolitan's own libc, not the standard Linux headers Blink's
+source expects), adding `-Wl,-z,max-page-size=16384` to fix the
+alignment. This did fix the overlap check — confirmed both by
+recomputing it by hand and by running the new Blink under
+`qemu-aarch64` end to end — but the user's next real-hardware test
+turned up a *second*, different crash: `ape error: .../blink-arm64.elf:
+prog mmap anon failed w/ errno 12` (ENOMEM). Cause: `--static` forces
+Blink's build to link as a plain `ET_EXEC` with a hardcoded
+`-Wl,-Ttext-segment=0x23000000` (Blink's own `configure` comment: *"otherwise
+relocate blink somewhere irregular"* — this fallback only exists because
+Blink's *preferred* build is PIE, deliberately skipped for static
+builds). `ape-m1.c`'s loader honors that hardcoded address with a fixed
+`mmap(MAP_FIXED)`, which apparently collides with something already
+mapped in the loader's own address space on real Apple Silicon — not
+reproducible in this environment (no macOS/Apple Silicon hardware), so
+diagnosed from the crash message and Blink's own `configure` logic
+rather than direct observation.
 
-Verified two ways: statically, by computing the exact same 16KB-page
-overlap check `ape-m1.c` performs on the new binary's segments (no
-overlap, and the `p_vaddr`/`p_offset` congruence-mod-pagesize check
-also passes) — the part that's actually guaranteed to matter on macOS;
-and functionally, by running the new Blink under `qemu-aarch64` to
-emulate the full `cc1`/`as`/`ld.bfd`/`apelink` pipeline end-to-end,
-producing a correct, working output binary, plus a full
-`scripts/minicosmocc.py test` run: 19/19 passing. What's *not*
-verified, because no Apple Silicon hardware was available: actually
-running the new `blink-arm64.elf` through `ape-m1.c` on real macOS —
-the static analysis above is why there's high confidence it now
-passes, not a live confirmation.
+**Actual fix**: rebuilt Blink as `-static-pie` instead of plain
+`-static` — self-contained (no dynamic linker needed, still runs
+standalone under `qemu-aarch64` with zero `NEEDED`/`INTERP` entries)
+*and* `ET_DYN`, so `ape-m1.c` maps it via `mmap(0, ..., MAP_ANONYMOUS)`
+(letting the OS choose a safe address) rather than a hardcoded
+`MAP_FIXED` request — the ASLR-cooperative path Blink's own `configure`
+comment says PIE exists for in the first place. Needed the Bootlin
+toolchain's bundled sysroot (`QEMU_LD_PREFIX` pointed at it) so
+`./configure`'s own feature-detection could dynamically link and run
+its test binaries under `qemu-aarch64` during the one-time *build*,
+even though the final artifact needs no dynamic linking at runtime.
 
-Net effect: `dist/minicosmocc.com` grew from 72.0MB to 72.4MB (the new
+Verified three ways: statically, by recomputing the 16KB-page overlap
+and `p_vaddr`/`p_offset` congruence checks on the new binary's segments
+(both pass); by confirming zero `NEEDED`/`INTERP` entries and that it
+runs standalone with no sysroot at all; and functionally, running the
+new Blink under `qemu-aarch64` to emulate the full `cc1`/`as`/`ld.bfd`/
+`apelink` pipeline end-to-end, plus a full `scripts/minicosmocc.py test`
+run: 40/40 checks passing. What's *not* verified, because no Apple
+Silicon hardware was available: actually running it through `ape-m1.c`
+on real macOS — the first fix's static verification looked equally solid
+at the time and still missed the second bug, so treat this as high
+confidence, not a live confirmation, until a real report comes back.
+
+Net effect: `dist/minicosmocc.com` grew from 72.0MB to 72.5MB (the new
 Blink build, even zero-trimmed, is larger than the old one — likely a
 newer Blink release plus different default build flags; not
 investigated further since the size delta is small).

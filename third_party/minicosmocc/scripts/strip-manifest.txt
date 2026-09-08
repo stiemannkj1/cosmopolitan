@@ -29,10 +29,16 @@ Current staged layout (build/):
               (Cosmopolitan's own aarch64-linux-cosmo-gcc doesn't work for
               this: it's --without-headers, only usable against
               Cosmopolitan's own libc headers, not Blink's expected
-              standard Linux/glibc ones), with
-              LDFLAGS="-static -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"
-              -- see SUMMARY.md, "Fixed: crash on Apple Silicon macOS
-              hosts", for why that specific flag mattered)
+              standard Linux/glibc ones), configured WITHOUT --static so
+              Blink's own configure picks its preferred -fpie/-pie build
+              instead of a hardcoded-address fallback, with CFLAGS/LDFLAGS
+              forcing -static-pie (self-contained, no dynamic linker
+              needed at runtime, but still ET_DYN so the macOS loader maps
+              it at an OS-chosen address instead of a fixed one) plus
+              -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 for
+              16KB-page-safe segment alignment -- see SUMMARY.md, "Fixed:
+              crash on Apple Silicon macOS hosts", for the two rounds of
+              bugs this fixes and why each flag matters)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
 
