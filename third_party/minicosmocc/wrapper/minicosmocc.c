@@ -323,6 +323,23 @@ static void blink_prefix(Cmd *c) {
   static char path[PATH_MAX];
   snprintf(path, sizeof path, "%s/blink/blink-arm64.elf", g_cache);
   cmd_add(c, path);
+  /* Opt-in debug hook: on macOS, blink-arm64.elf is a plain Linux ELF
+   * that only a cosmo-linked process's own execve() (via ape-m1.c's
+   * userspace loader) can launch -- a user can't just copy the failing
+   * command out of an error message and re-run it with extra blink
+   * flags (-e, -s, -Z, ...) from their own shell, since a normal shell
+   * on macOS can't execve() this file at all ("Exec format error").
+   * MINICOSMOCC_BLINK_FLAGS lets them add such flags (space-separated,
+   * passed straight to blink, before the target program) without
+   * needing a rebuild for every debugging attempt. */
+  const char *extra = getenv("MINICOSMOCC_BLINK_FLAGS");
+  if (extra && *extra) {
+    static char buf[PATH_MAX];
+    snprintf(buf, sizeof buf, "%s", extra);
+    for (char *tok = strtok(buf, " "); tok; tok = strtok(NULL, " ")) {
+      cmd_add(c, tok);
+    }
+  }
 }
 
 /* apelink/fixupobj/pecheck are staged amd64-native only (same reasoning

@@ -484,6 +484,44 @@ Blink build, even zero-trimmed, is larger than the old one — likely a
 newer Blink release plus different default build flags; not
 investigated further since the size delta is small).
 
+**Status: still open.** The user's next real-hardware test hit the
+same symptom again — the compile still fails silently, no output from
+Blink at all, even with the `MAP_JIT` fix in place. Four attempts in a
+row have each looked fully verified here (alignment, `PT_DYNAMIC`,
+functional `qemu-aarch64` runs, the full test suite) and each still
+missed something only visible on real Apple Silicon, so guessing a
+fifth fix blind isn't a good use of another round trip. Also can't be
+diagnosed by manually re-running the failing command shown in the
+wrapper's error message with extra Blink debug flags spliced in by
+hand: `blink-arm64.elf` is a plain Linux ELF that only a cosmo-linked
+process's own `execve()` (via `ape-m1.c`'s userspace loader) can launch
+on macOS — a normal shell just gets `Exec format error` trying to run
+it directly.
+
+Added an opt-in debug hook instead (`blink_prefix()` in
+`wrapper/minicosmocc.c`): the `MINICOSMOCC_BLINK_FLAGS` environment
+variable is split on spaces and spliced into Blink's own argv, right
+after the `blink-arm64.elf` path and before the target program —
+verified working end to end under `qemu-aarch64` (confirmed `-e -s`
+produces a live per-syscall trace on stderr). Combined with Blink's own
+`BLINK_LOG_FILENAME` environment variable (which needs no wrapper
+change at all — it's read directly by Blink via `getenv()`, and
+environment variables propagate through `execve()` regardless of which
+loader mechanism is doing the launching), this should let a next
+real-hardware run capture actual diagnostic output instead of nothing:
+
+```
+MINICOSMOCC_BLINK_FLAGS="-e -s" BLINK_LOG_FILENAME=/tmp/blink-debug.log \
+    minicosmocc.com hello.c -o hello
+```
+
+Whatever comes back from that — a partial syscall trace ending
+abruptly, a Blink-internal crash report, or genuinely nothing at all
+(which would itself point toward a hard `SIGKILL` from macOS's
+hardened runtime, uncatchable by any handler, meaning the next fix is
+about entitlements/code-signing rather than another Blink build flag)
+is the next real lead, rather than another guess.
+
 ## Known limitations / next steps
 
 - Blink (`vendor/blink-arm64.elf`) is vendored as a built binary rather
