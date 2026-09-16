@@ -522,6 +522,36 @@ hardened runtime, uncatchable by any handler, meaning the next fix is
 about entitlements/code-signing rather than another Blink build flag)
 is the next real lead, rather than another guess.
 
+**Investigated and reverted: wrapping `blink-arm64.elf` with `apelink`.**
+A reasonable hypothesis given the user's own observation of "no errors
+or files" (i.e., not even a partial trace, suggesting Blink might not
+even be starting): `blink-arm64.elf` is the *only* native-arm64 binary
+in this whole pipeline that isn't a proper `apelink`-produced fat APE
+file (unlike this wrapper itself, `cc1`/`as`/`ld.bfd`/`apelink`, all of
+which carry their own embedded shell-script header and `ape-m1.c`
+loader source) — it's a raw ELF from a plain cross-compiler, executed
+directly via `execv()` and relying on Cosmopolitan's own generic
+"foreign ELF" `execve()` fallback (`libc/proc/execve-sysv.c`) rather
+than the far more exercised "this file's own dedicated loader" path.
+Tried wrapping it with `apelink -l ape-aarch64.elf -M ape-m1.c` (the
+same call every other arm64-native binary here goes through) — this
+regressed real, working functionality: the wrapped output's embedded
+shell-script header only contained an **x86_64** branch (confirmed via
+strace: `this ape program lacks x86_64 support` when actually run
+under `qemu-aarch64`), even though only the aarch64 loader stub was
+supplied. `apelink`'s single-arch join of a non-cosmo-built ELF payload
+doesn't generate a correct arch-detection branch — a real bug in that
+code path, but out of scope to fix here (would mean patching
+`apelink.c` itself with more confidence in its internals than currently
+warranted). Caught by the automated test suite (`arm64-qemu` scenario
+regressed from 11/11 to 7/11) before this reached the user; reverted
+cleanly, back to 40/40 passing. The user's original hypothesis (Blink
+should be a proper APE file) may still be right in spirit — the
+generic `execve()` fallback path really is less exercised than the
+dedicated-loader one — but making it work would require understanding
+and fixing `apelink`'s single-arch-join bug first, not just invoking
+it differently.
+
 ## Known limitations / next steps
 
 - Blink (`vendor/blink-arm64.elf`) is vendored as a built binary rather
