@@ -552,19 +552,75 @@ dedicated-loader one — but making it work would require understanding
 and fixing `apelink`'s single-arch-join bug first, not just invoking
 it differently.
 
+## Rebuilt `blink-arm64.elf` with cosmocc (2026-09-16)
+
+The user pushed back on the revert above with the right instinct: "shouldn't
+blink also be compiled as an APE?" The previous attempt tested that
+hypothesis by taking the existing *foreign-toolchain* Blink ELF (built with
+a Bootlin cross-compiler) and manually apelink-wrapping it after the fact —
+which hit `apelink`'s single-arch-join bug because that ELF was never a
+cosmo-built payload to begin with. The fix wasn't to wrap it differently; it
+was to build Blink with cosmocc in the first place, the same way every other
+binary in this toolchain is built.
+
+Blink's own source (`blink-1.1.0`, checked out separately at
+`~/Projects/work/blink`) already has first-class support for this: its
+`./configure` accepts `CC`/`AR` overrides, and its own `Makefile` comment
+even says `make m=cosmo ... # needs cosmopolitan/tool/scripts/cosmocc`.
+Pointed `CC`/`AR` at this project's own `.cosmocc/4.0.2/bin/{cosmocc,cosmoar}`
+(the same release `stage_toolchain()` already stages everything else from)
+and ran Blink's normal `./configure && make o//blink/blink` unmodified. Two
+snags, both trivial:
+
+- `tool/cosmocc/bin/cosmocc` (the in-monorepo copy) is missing a `mktemper`
+  helper binary that the driver script shells out to — using
+  `.cosmocc/4.0.2/bin/cosmocc` (the full downloaded release archive, which
+  has it) instead sidesteps this.
+- Nothing else — `./configure`'s feature checks (`mmap(MAP_ANONYMOUS)`,
+  `getrandom()`, `sched_getaffinity()`, etc.) all passed once `mktemper` was
+  found, and the full `blink` target built cleanly with only pre-existing
+  `-Wcast-align` warnings (unrelated, present upstream).
+
+The result is a genuine `MZqFpD` fat APE (confirmed via `file` and by
+locating the embedded ELF slices), produced by cosmocc's own internal call
+to `apelink` joining two *cosmo-built* ELF slices — the properly-supported
+case, unlike the previous manual single-arch wrap of a foreign ELF. This
+single change obsoletes all four of the previous point-fixes (page size,
+load address, `PT_DYNAMIC`, `MAP_JIT`): cosmocc's own linker script and
+libc headers already produce output that satisfies every one of
+`ape-m1.c`'s constraints, for the same structural reason every other binary
+in this toolchain already does — there was never anything Blink-specific
+about those four bugs, they were all downstream of using a foreign
+toolchain in the first place.
+
+Extracted just the arm64 slice with this project's own `assimilate -a` +
+`zero_trim_fat` helpers (already used identically for `fixupobj`/`pecheck`
+above — this is the established idiom for "one real arch, other dropped",
+not a new pattern) and vendored the result as the new
+`vendor/blink-arm64.elf` (2,002,258 bytes, close to the previous
+unstripped size). Verified with the full test suite: 19/19 passing,
+including the `arm64-qemu` scenario that exercises this file directly.
+
+This doesn't confirm the real Apple Silicon crash is fixed — that still
+needs a real-hardware run — but it closes out a genuine, structural gap
+(Blink was the one binary in this pipeline not going through the
+dedicated-loader path) rather than another guess at a symptom, and the
+`MINICOSMOCC_BLINK_FLAGS`/`BLINK_LOG_FILENAME` debug hook from the previous
+section remains available if this alone isn't sufficient.
+
 ## Known limitations / next steps
 
 - Blink (`vendor/blink-arm64.elf`) is vendored as a built binary rather
-  than built fresh by `scripts/minicosmocc.py` itself, but building it
-  turned out to be possible after all (see previous section) — a
-  downloaded Bootlin `aarch64--glibc--stable` toolchain, not
-  Cosmopolitan's own `aarch64-linux-cosmo-gcc`, plus `./configure` and
-  `make o` from Blink's own build system with `-z max-page-size=16384`
-  appended to `LDFLAGS`. Automating that download-and-build into
-  `stage_toolchain()` (matching how `apelink`/the ape loader are already
-  built from source) is a reasonable follow-up if Blink needs another
-  version bump; not done here since it's a larger change than this fix
-  called for.
+  than built fresh by `scripts/minicosmocc.py` itself. It's now built with
+  this project's own cosmocc release (see "Rebuilt `blink-arm64.elf` with
+  cosmocc" above) rather than a foreign cross-toolchain, but the build
+  still happens by hand against a separate Blink source checkout, not as
+  part of `stage_toolchain()`. Automating that (checking out/downloading
+  Blink's source and running its `./configure && make` from
+  `stage_toolchain()` itself, matching how `apelink`/the ape loader are
+  already built from source) is a reasonable follow-up if Blink needs
+  another version bump; not done here since it's a larger change than
+  this fix called for.
 - `--target=amd64|arm64` (single-arch output, skipping the fat join) has a
   known bug in `apelink_join()` — noted but not revisited since it's not
   exercised by the plan's actual test matrix (which is about the fat-binary

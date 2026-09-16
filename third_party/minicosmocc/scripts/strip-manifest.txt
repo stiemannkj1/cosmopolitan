@@ -23,27 +23,46 @@ Current staged layout (build/):
               there). fixupobj/pecheck remain prebuilt.
   blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
               code -- see below for why no blink-amd64.elf is needed; vendored
-              as a built binary, see vendor/ -- no upstream prebuilt release,
-              so built from Blink's own source (blink-1.1.0) using a
-              downloaded Bootlin aarch64--glibc--stable cross-toolchain
-              (Cosmopolitan's own aarch64-linux-cosmo-gcc doesn't work for
-              this: it's --without-headers, only usable against
-              Cosmopolitan's own libc headers, not Blink's expected
-              standard Linux/glibc ones), configured WITH --static (a
-              PIE/-static-pie build was tried and reverted: ape-m1.c
-              flatly rejects any ELF with a PT_DYNAMIC segment, which a
-              static-pie binary always has for its own self-relocation,
-              regardless of whether it has any actual library
-              dependencies) -- a plain ET_EXEC, no PT_DYNAMIC/PT_INTERP
-              at all, with LDFLAGS overriding both Blink's default
-              64KB page-size flags (-Wl,-z,max-page-size=16384
-              -Wl,-z,common-page-size=16384, for 16KB-page-safe segment
-              alignment) and its default fixed load address
-              (-Wl,-Ttext-segment=0x800000000, replacing Blink's own
-              0x23000000 default -- not a guess, it's the exact address
-              Cosmopolitan's own ape/aarch64.lds uses for every arm64
-              binary this toolchain links, already proven to work
-              through this same loader in production), plus CFLAGS
+              as a built binary, see vendor/ -- no upstream prebuilt release.
+
+              REBUILT 2026-09-16 with the project's own cosmocc (the same
+              .cosmocc/4.0.2 release this whole toolchain is staged from),
+              compiled from Blink's own source (blink-1.1.0, checked out
+              separately at ~/Projects/work/blink) via that source tree's
+              normal `./configure`+`make` with CC/AR pointed at cosmocc/
+              cosmoar, producing a real fat APE (both amd64 and arm64
+              slices, apelink-joined by cosmocc itself, the same way every
+              other binary in this toolchain is built) rather than a bare
+              foreign-toolchain ELF. `assimilate -a` + zero_trim_fat (this
+              project's own helpers, already used for fixupobj/pecheck
+              above) then extract just the arm64 slice and drop the unused
+              amd64 one. This obsoletes all four of the previous manual
+              fixups below (page size, load address, PT_DYNAMIC, MAP_JIT):
+              cosmocc's own linker script and libc headers already produce
+              output that satisfies every one of ape-m1.c's constraints,
+              for the same reason every other binary in this toolchain
+              already does. Confirmed via the full test suite (19/19).
+
+              Previously (2026-09-07 through 2026-09-15): built from
+              Blink's own source using a downloaded Bootlin
+              aarch64--glibc--stable cross-toolchain (Cosmopolitan's own
+              aarch64-linux-cosmo-gcc doesn't work for this: it's
+              --without-headers, only usable against Cosmopolitan's own
+              libc headers, not Blink's expected standard Linux/glibc
+              ones), configured WITH --static (a PIE/-static-pie build was
+              tried and reverted: ape-m1.c flatly rejects any ELF with a
+              PT_DYNAMIC segment, which a static-pie binary always has for
+              its own self-relocation, regardless of whether it has any
+              actual library dependencies) -- a plain ET_EXEC, no
+              PT_DYNAMIC/PT_INTERP at all, with LDFLAGS overriding both
+              Blink's default 64KB page-size flags
+              (-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384,
+              for 16KB-page-safe segment alignment) and its default fixed
+              load address (-Wl,-Ttext-segment=0x800000000, replacing
+              Blink's own 0x23000000 default -- not a guess, it's the
+              exact address Cosmopolitan's own ape/aarch64.lds uses for
+              every arm64 binary this toolchain links, already proven to
+              work through this same loader in production), plus CFLAGS
               -DMAP_JIT=0x800 (Blink's own blink/jit.c picks between
               mmap(MAP_JIT|...) and a plain mprotect() for making its
               JIT-compiled code executable based on #ifdef MAP_JIT --
@@ -55,8 +74,10 @@ Current staged layout (build/):
               Linux no-op flag -- MAP_DENYWRITE -- so safe to test
               under qemu-aarch64 here too) -- see SUMMARY.md, "Fixed:
               crash on Apple Silicon macOS hosts",
-              for the four rounds of bugs this fixes and why each flag
-              matters)
+              for the four rounds of bugs this fixed and why each flag
+              mattered, and "Rebuilt with cosmocc" for why the whole
+              foreign-toolchain approach was replaced rather than
+              patched a fifth time)
   include/    shared, arch-independent headers, staged once
   gold/       NOTE.md only -- no gold linker exists anywhere in this ecosystem
 
