@@ -593,13 +593,19 @@ in this toolchain already does — there was never anything Blink-specific
 about those four bugs, they were all downstream of using a foreign
 toolchain in the first place.
 
-Extracted just the arm64 slice with this project's own `assimilate -a` +
-`zero_trim_fat` helpers (already used identically for `fixupobj`/`pecheck`
-above — this is the established idiom for "one real arch, other dropped",
-not a new pattern) and vendored the result as the new
-`vendor/blink-arm64.elf` (2,002,258 bytes, close to the previous
-unstripped size). Verified with the full test suite: 19/19 passing,
-including the `arm64-qemu` scenario that exercises this file directly.
+Initially extracted just the arm64 slice with this project's own
+`assimilate -a` + `zero_trim_fat` helpers (already used identically for
+`fixupobj`/`pecheck` above), which worked and stayed a valid `MZqFpD`
+polyglot (confirmed via `file`; `assimilate`/`zero_trim_fat` only zero
+unused-arch bytes and truncate trailing debug data past the last real
+segment, they don't strip the shell-script header). But the saving was
+under 150KB out of ~2MB, not worth the extra step or the extra surface
+area for another subtle bug like the one two sections up — vendored the
+untouched fat build instead (`vendor/blink-arm64.elf`, 2,146,274 bytes,
+both arches present, amd64 simply never exercised since `needs_blink` is
+only true when the host is arm64). Verified with the full test suite:
+19/19 passing, including the `arm64-qemu` scenario that exercises this
+file directly.
 
 This doesn't confirm the real Apple Silicon crash is fixed — that still
 needs a real-hardware run — but it closes out a genuine, structural gap

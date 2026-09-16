@@ -33,10 +33,13 @@ Current staged layout (build/):
               cosmoar, producing a real fat APE (both amd64 and arm64
               slices, apelink-joined by cosmocc itself, the same way every
               other binary in this toolchain is built) rather than a bare
-              foreign-toolchain ELF. `assimilate -a` + zero_trim_fat (this
-              project's own helpers, already used for fixupobj/pecheck
-              above) then extract just the arm64 slice and drop the unused
-              amd64 one. This obsoletes all four of the previous manual
+              foreign-toolchain ELF. Vendored untouched (both arches
+              present, amd64 simply never exercised since `needs_blink`
+              is only true on arm64 hosts) -- `assimilate -a` +
+              zero_trim_fat (this project's own helpers, already used for
+              fixupobj/pecheck above) were tried to drop the unused amd64
+              slice too, but the saving was under 150KB out of ~2MB, not
+              worth the extra step. This obsoletes all four of the previous manual
               fixups below (page size, load address, PT_DYNAMIC, MAP_JIT):
               cosmocc's own linker script and libc headers already produce
               output that satisfies every one of ape-m1.c's constraints,
