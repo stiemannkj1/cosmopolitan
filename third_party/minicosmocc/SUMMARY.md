@@ -600,33 +600,34 @@ polyglot (confirmed via `file`; `assimilate`/`zero_trim_fat` only zero
 unused-arch bytes and truncate trailing debug data past the last real
 segment, they don't strip the shell-script header). But the saving was
 under 150KB out of ~2MB, not worth the extra step or the extra surface
-area for another subtle bug like the one two sections up — vendored the
-untouched fat build instead (`vendor/blink-arm64.elf`, 2,146,274 bytes,
-both arches present, amd64 simply never exercised since `needs_blink` is
-only true when the host is arm64). Verified with the full test suite:
-19/19 passing, including the `arm64-qemu` scenario that exercises this
-file directly.
+area for another subtle bug like the one two sections up — kept the
+untouched fat build instead (both arches present, amd64 simply never
+exercised since `needs_blink` is only true when the host is arm64).
+
+Then automated the whole thing into `stage_toolchain()` itself
+(`ensure_blink_source()` + `build_blink()`), the same way apelink/the ape
+loader are already built from local source rather than vendored:
+`ensure_blink_source()` clones `jart/blink` as a sibling of the
+cosmopolitan monorepo checkout if it's not already there, and checks out
+the exact pinned commit (`BLINK_COMMIT`) regardless of what's currently
+checked out; `build_blink()` reconfigures from scratch with `CC`/`AR`
+pointed at this project's own cosmocc/cosmoar every run (a stale
+`config.mk` from some other compiler would otherwise be silently reused)
+and builds just the `blink` target. `vendor/blink-arm64.elf` is gone —
+there's no prebuilt binary checked into this repo any more, only the
+pinned upstream commit `scripts/minicosmocc.py` builds fresh. Verified
+both the "no local clone yet" and "local clone at the wrong commit" paths
+directly, and the full test suite end to end: 19/19 passing.
 
 This doesn't confirm the real Apple Silicon crash is fixed — that still
 needs a real-hardware run — but it closes out a genuine, structural gap
 (Blink was the one binary in this pipeline not going through the
-dedicated-loader path) rather than another guess at a symptom, and the
+dedicated-loader path, and the one binary not built from source by this
+project) rather than another guess at a symptom, and the
 `MINICOSMOCC_BLINK_FLAGS`/`BLINK_LOG_FILENAME` debug hook from the previous
 section remains available if this alone isn't sufficient.
 
 ## Known limitations / next steps
-
-- Blink (`vendor/blink-arm64.elf`) is vendored as a built binary rather
-  than built fresh by `scripts/minicosmocc.py` itself. It's now built with
-  this project's own cosmocc release (see "Rebuilt `blink-arm64.elf` with
-  cosmocc" above) rather than a foreign cross-toolchain, but the build
-  still happens by hand against a separate Blink source checkout, not as
-  part of `stage_toolchain()`. Automating that (checking out/downloading
-  Blink's source and running its `./configure && make` from
-  `stage_toolchain()` itself, matching how `apelink`/the ape loader are
-  already built from source) is a reasonable follow-up if Blink needs
-  another version bump; not done here since it's a larger change than
-  this fix called for.
 - `--target=amd64|arm64` (single-arch output, skipping the fat join) has a
   known bug in `apelink_join()` — noted but not revisited since it's not
   exercised by the plan's actual test matrix (which is about the fat-binary
@@ -649,7 +650,8 @@ section remains available if this alone isn't sufficient.
 ```
 third_party/minicosmocc/
   wrapper/minicosmocc.c       the whole compiler wrapper (~650 lines)
-  vendor/blink-arm64.elf      pinned prebuilt Blink binary (see Known limitations)
+  (no vendor/ dir -- Blink is cloned + built from its pinned upstream
+   commit by scripts/minicosmocc.py, not checked into this repo)
   scripts/
     minicosmocc.py            stage + build + test, one script (test|build|build-uncached)
     strip-manifest.txt        full record of what was stripped/kept and why

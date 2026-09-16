@@ -22,18 +22,17 @@ Current staged layout (build/):
               why and for the two bugs found and worked around getting
               there). fixupobj/pecheck remain prebuilt.
   blink/      blink-arm64.elf only (runs natively on arm64, emulates amd64 guest
-              code -- see below for why no blink-amd64.elf is needed; vendored
-              as a built binary, see vendor/ -- no upstream prebuilt release.
+              code -- see below for why no blink-amd64.elf is needed).
 
               REBUILT 2026-09-16 with the project's own cosmocc (the same
               .cosmocc/4.0.2 release this whole toolchain is staged from),
-              compiled from Blink's own source (blink-1.1.0, checked out
-              separately at ~/Projects/work/blink) via that source tree's
-              normal `./configure`+`make` with CC/AR pointed at cosmocc/
-              cosmoar, producing a real fat APE (both amd64 and arm64
-              slices, apelink-joined by cosmocc itself, the same way every
-              other binary in this toolchain is built) rather than a bare
-              foreign-toolchain ELF. Vendored untouched (both arches
+              compiled from Blink's own source (blink-1.1.0-era, pinned to
+              commit f006a4fc6f9b8de9272504fdff0dbbe5ce5dc580) via that
+              source tree's normal `./configure`+`make` with CC/AR pointed
+              at cosmocc/cosmoar, producing a real fat APE (both amd64 and
+              arm64 slices, apelink-joined by cosmocc itself, the same way
+              every other binary in this toolchain is built) rather than a
+              bare foreign-toolchain ELF. Kept untouched (both arches
               present, amd64 simply never exercised since `needs_blink`
               is only true on arm64 hosts) -- `assimilate -a` +
               zero_trim_fat (this project's own helpers, already used for
@@ -45,6 +44,15 @@ Current staged layout (build/):
               output that satisfies every one of ape-m1.c's constraints,
               for the same reason every other binary in this toolchain
               already does. Confirmed via the full test suite (19/19).
+
+              AUTOMATED (same day): no longer a hand-built binary checked
+              into vendor/ -- `ensure_blink_source()` + `build_blink()` in
+              scripts/minicosmocc.py clone jart/blink as a sibling of the
+              cosmopolitan monorepo checkout (if not already present),
+              pin/check out the exact commit above regardless of what's
+              currently checked out, and build it the same way every
+              `stage_toolchain()` run, matching how apelink/the ape loader
+              are already built from local source rather than vendored.
 
               Previously (2026-09-07 through 2026-09-15): built from
               Blink's own source using a downloaded Bootlin

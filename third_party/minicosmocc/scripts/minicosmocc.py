@@ -23,7 +23,11 @@ not repeated in full here.
 
 Requires the full cosmopolitan monorepo checkout (not just this
 third_party/minicosmocc directory): apelink and the ape loader stubs
-are built from local source via the monorepo's own `make`.
+are built from local source via the monorepo's own `make`. Also clones
+(if not already present) jart/blink as a sibling of the monorepo
+checkout and builds it from source -- see BLINK_REPO/BLINK_COMMIT
+below -- so a working `git` and network access to GitHub are needed
+too.
 """
 import argparse
 import os
@@ -40,12 +44,24 @@ MONOREPO = ROOT.parent.parent  # cosmopolitan/
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 WRAPPER_SRC = ROOT / "wrapper" / "minicosmocc.c"
-VENDOR = ROOT / "vendor"
 TESTS_WORK = ROOT / "tests" / "work"
 
 COSMOCC_VERSION = os.environ.get("COSMOCC_VERSION", "4.0.2")
 COSMOCC_STORE = MONOREPO / ".cosmocc"
 COSMOCC = COSMOCC_STORE / COSMOCC_VERSION
+
+# Blink (the x86-64 emulator arm64 hosts need to run this toolchain's
+# amd64-only cc1/as/ld.bfd) is built from its own upstream source rather
+# than vendored prebuilt -- see SUMMARY.md, "Rebuilt blink-arm64.elf with
+# cosmocc", for why a plain cosmocc build replaced a foreign-toolchain
+# one. Cloned as a sibling of this monorepo checkout (matching where the
+# rest of this project's local-source dependencies, like apelink, are
+# found) and pinned to the exact commit that build was verified against;
+# bump BLINK_COMMIT deliberately, not by whatever origin/master happens
+# to be on the day this runs.
+BLINK_REPO = "https://github.com/jart/blink.git"
+BLINK_COMMIT = "f006a4fc6f9b8de9272504fdff0dbbe5ce5dc580"
+BLINK_SRC = MONOREPO.parent / "blink"
 
 # lib/ files to keep per target tree: the C-only cosmo runtime pieces
 # the wrapper's link step needs. Everything else in the release's lib
@@ -369,7 +385,8 @@ def full_clean():
 # assimilates every dual-arch tool to an amd64-native view with the
 # zero+trim technique above, copies the filtered lib/ and include/
 # trees, builds apelink + the ape loader from local source, and
-# installs the vendored Blink binary. Re-run after a cosmocc version
+# builds Blink from its own pinned upstream source. Re-run after a
+# cosmocc version
 # bump (set COSMOCC_VERSION) to re-derive build/ from the new release;
 # the zero+trim math is re-measured from the fresh binaries each time,
 # not hardcoded to today's offsets.
@@ -420,6 +437,56 @@ def stage_tree(tree, triple):
         zero_trim_fat(src, dst, COSMOCC)
     relink(dst_root / "bin/as", f"{triple}-as")
     relink(dst_root / "bin/ld.bfd", f"{triple}-ld.bfd")
+
+
+def ensure_blink_source():
+    """Clone jart/blink as a sibling of this monorepo checkout if it
+    isn't already there, then make sure the pinned commit is present and
+    checked out. Leaves any other local state (an existing clone's
+    remotes, branches, untracked build output under o/) alone -- this
+    only touches HEAD."""
+    if not (BLINK_SRC / ".git").exists():
+        print(f"==> [blink] cloning {BLINK_REPO} to {BLINK_SRC}")
+        subprocess.run(["git", "clone", BLINK_REPO, str(BLINK_SRC)], check=True)
+    have_commit = subprocess.run(
+        ["git", "cat-file", "-e", f"{BLINK_COMMIT}^{{commit}}"],
+        cwd=BLINK_SRC, capture_output=True).returncode == 0
+    if not have_commit:
+        print(f"==> [blink] fetching pinned commit {BLINK_COMMIT}")
+        subprocess.run(["git", "fetch", "origin", BLINK_COMMIT], cwd=BLINK_SRC, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=BLINK_SRC,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    if head != BLINK_COMMIT:
+        print(f"==> [blink] checking out pinned commit {BLINK_COMMIT} (was {head})")
+        subprocess.run(["git", "checkout", "--quiet", "--detach", BLINK_COMMIT],
+                        cwd=BLINK_SRC, check=True)
+
+
+def build_blink():
+    """Build just the Blink emulator (blink/blink.c et al -- not
+    blinkenlights or the test suite) with this project's own cosmocc,
+    producing a real cosmo fat APE. See SUMMARY.md, "Rebuilt
+    blink-arm64.elf with cosmocc", for why this replaced a foreign
+    cross-toolchain build and the four point-fixes that came with it."""
+    print("==> [blink] configuring with cosmocc")
+    env = {**os.environ,
+           "CC": str(COSMOCC / "bin/cosmocc"),
+           "AR": str(COSMOCC / "bin/cosmoar")}
+    # Reconfigure from scratch every time: config.mk/config.h cache the
+    # compiler path and ./configure's feature-check results, and a stale
+    # config left over from some other build (e.g. the host's plain cc)
+    # would silently keep using it instead of cosmocc.
+    for name in ("o", "config.h", "config.mk", "config.log"):
+        p = BLINK_SRC / name
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.exists():
+            p.unlink()
+    subprocess.run(["./configure"], cwd=BLINK_SRC, env=env, check=True)
+    print("==> [blink] building emulator")
+    nproc = str(os.cpu_count() or 1)
+    subprocess.run(["make", "-j", nproc, "o//blink/blink"], cwd=BLINK_SRC, env=env, check=True)
+    return BLINK_SRC / "o/blink/blink"
 
 
 def stage_toolchain():
@@ -481,8 +548,10 @@ def stage_toolchain():
     for f in ("ape-m1.c", "ape-x86_64.macho"):
         shutil.copy(COSMOCC / "bin" / f, BUILD / "apelink" / f)
 
-    print("==> [blink] installing vendored blink-arm64.elf + trim")
-    shutil.copy(VENDOR / "blink-arm64.elf", BUILD / "blink/blink-arm64.elf")
+    ensure_blink_source()
+    blink_bin = build_blink()
+    print("==> [blink] installing built blink-arm64.elf + trim")
+    shutil.copy(blink_bin, BUILD / "blink/blink-arm64.elf")
     (BUILD / "blink/blink-arm64.elf").chmod(0o755)
     zero_trim_single(BUILD / "blink/blink-arm64.elf")
 
