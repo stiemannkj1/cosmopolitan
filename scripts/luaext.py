@@ -48,8 +48,40 @@ LFS_URL = ("https://github.com/lunarmodules/luafilesystem/archive/refs/tags/"
            "%s.tar.gz" % LFS_TAG)
 LFS_SHA256 = "16d17c788b8093f2047325343f5e9b74cccb1ea96001e45914a58bbae8932495"
 
+LPEG_VERSION = "1.1.0"
+LPEG_URL = ("http://www.inf.puc-rio.br/~roberto/lpeg/lpeg-%s.tar.gz"
+            % LPEG_VERSION)
+LPEG_SHA256 = "4b155d67d2246c1ffa7ad7bc466c1ea899bbc40fef0257cc9c03cecbaed4352a"
+
+LUAHTTP_VERSION = "0.4"
+LUAHTTP_URL = ("https://github.com/daurnimator/lua-http/archive/refs/tags/"
+               "v%s.tar.gz" % LUAHTTP_VERSION)
+LUAHTTP_SHA256 = "d2e3cb9bc04cab70ac4f19351bc74b0dcd8b16cfc2563aa77256eb3a43b3b9e0"
+
+LPEG_PATTERNS_VERSION = "0.5"
+LPEG_PATTERNS_URL = ("https://github.com/daurnimator/lpeg_patterns/archive/"
+                     "refs/tags/v%s.tar.gz" % LPEG_PATTERNS_VERSION)
+LPEG_PATTERNS_SHA256 = "d1fabf897024822eb2544fd811fc80b85655972804511b9fd8cfea377fb16e0e"
+
+BASEXX_VERSION = "0.4.1"
+BASEXX_URL = ("https://github.com/aiq/basexx/archive/refs/tags/v%s.tar.gz"
+              % BASEXX_VERSION)
+BASEXX_SHA256 = "ff62b00446df1181a9cd20ba970c3c8493165d262142e10d069ee3de6337dfe6"
+
+BINARYHEAP_VERSION = "0v4"
+BINARYHEAP_URL = ("https://github.com/Tieske/binaryheap.lua/archive/refs/"
+                  "tags/version_%s.tar.gz" % BINARYHEAP_VERSION)
+BINARYHEAP_SHA256 = "10b1b6c6f2d22560f512f9896a6672ec5ae0eea1390ff8e662be1d5d9625b438"
+
+FIFO_VERSION = "0.2"
+FIFO_URL = ("https://github.com/daurnimator/fifo.lua/archive/refs/tags/"
+            "%s.tar.gz" % FIFO_VERSION)
+FIFO_SHA256 = "85cad0c2f9eac1cd3e08c5134feb655e0b928e1e22363c3ef3293a194c0eb53f"
+
 POSIX_DIR = ROOT / "third_party/luaposix"
 LFS_DIR = ROOT / "third_party/lfs"
+LPEG_DIR = ROOT / "third_party/lpeg"
+LUAHTTP_DIR = ROOT / "third_party/luahttp"
 
 # the 28 C submodules, in posix.c's include order.  the name on the left
 # is the `require` name, the luaopen_ symbol is the same with dots turned
@@ -592,6 +624,85 @@ POSIX_EDITS["sys/socket.c"] = [
 ]
 
 
+# upstream binds no MSG_* constants at all, and its send/recv/sendto/
+# recvfrom hard-code a flags argument of 0.  that leaves no way to ask
+# for MSG_NOSIGNAL, which is the only thing standing between a write to
+# a closed socket and a SIGPIPE that kills the process.  cosmopolitan
+# has every one of these flags, so bind them and let callers pass them.
+POSIX_EDITS["sys/socket.c"] += [
+    ("""	LPOSIX_CONST( SHUT_RD		);""",
+     """	/* cosmo: message flags, which upstream does not bind */
+	LPOSIX_CONST( MSG_OOB		);
+	LPOSIX_CONST( MSG_PEEK		);
+	LPOSIX_CONST( MSG_DONTROUTE	);
+	LPOSIX_CONST( MSG_DONTWAIT	);
+	LPOSIX_CONST( MSG_WAITALL	);
+	LPOSIX_CONST( MSG_NOSIGNAL	);
+	LPOSIX_CONST( MSG_TRUNC		);
+	LPOSIX_CONST( MSG_CTRUNC	);
+
+	LPOSIX_CONST( SHUT_RD		);""", 1),
+
+    # send(fd, buffer [, flags])
+    ("""	const char *buf = luaL_checklstring(L, 2, &len);
+
+	checknargs(L, 2);
+	return pushresult(L, send(fd, buf, len, 0), "send");""",
+     """	const char *buf = luaL_checklstring(L, 2, &len);
+	int flags = optint(L, 3, 0);
+
+	checknargs(L, 3);
+	return pushresult(L, send(fd, buf, len, flags), "send");""", 1),
+
+    # recv(fd, count [, flags])
+    ("""	size_t count = (size_t)checkinteger(L, 2);
+	ssize_t ret;
+	void *ud, *buf;
+	lua_Alloc lalloc;
+
+	checknargs(L, 2);""",
+     """	size_t count = (size_t)checkinteger(L, 2);
+	int flags = optint(L, 3, 0);
+	ssize_t ret;
+	void *ud, *buf;
+	lua_Alloc lalloc;
+
+	checknargs(L, 3);""", 1),
+    ("""	ret = recv(fd, buf, count, 0);""",
+     """	ret = recv(fd, buf, count, flags);""", 1),
+
+    # sendto(fd, buffer, sockaddr [, flags])
+    ("""	struct sockaddr_storage sa;
+	socklen_t salen;
+	checknargs (L, 3);""",
+     """	struct sockaddr_storage sa;
+	socklen_t salen;
+	int flags = optint(L, 4, 0);
+	checknargs (L, 4);""", 1),
+    ("""	return pushresult(L, sendto(fd, buf, len, 0, (struct sockaddr *)&sa, salen), "sendto");""",
+     """	return pushresult(L, sendto(fd, buf, len, flags, (struct sockaddr *)&sa, salen), "sendto");""", 1),
+
+    # recvfrom(fd, count [, flags])
+    ("""	ssize_t ret;
+	void *ud, *buf;
+	lua_Alloc lalloc;
+	socklen_t salen;
+	struct sockaddr_storage sa;
+
+	checknargs(L, 2);""",
+     """	ssize_t ret;
+	void *ud, *buf;
+	lua_Alloc lalloc;
+	socklen_t salen;
+	struct sockaddr_storage sa;
+	int flags = optint(L, 3, 0);
+
+	checknargs(L, 3);""", 1),
+    ("""	ret = recvfrom(fd, buf, count, 0, (struct sockaddr *)&sa, &salen);""",
+     """	ret = recvfrom(fd, buf, count, flags, (struct sockaddr *)&sa, &salen);""", 1),
+]
+
+
 GLOBAL_INCLUDE_REWRITES = [
     ('#include "_helpers.c"', '#include "third_party/luaposix/_helpers.c"'),
     ('#include "compat-5.2.c"', '#include "third_party/luaposix/compat-5.2.c"'),
@@ -642,6 +753,13 @@ LOCAL MODIFICATIONS
   (F_SETLK, POLLIN, AF_INET6, SOL_SOCKET, SO_LINGER, IPV6_JOIN_GROUP,
   ...) at link time, so they cannot appear as case labels or in static
   initializers.  The control flow is otherwise untouched.
+
+  sys/socket.c gained the MSG_* constants, which upstream binds
+  nowhere, and an optional flags argument on send, recv, sendto and
+  recvfrom, which upstream hard-codes to 0.  Without MSG_NOSIGNAL there
+  is no way to stop a write to a closed socket from raising SIGPIPE and
+  killing the process, short of ignoring the signal globally.  The
+  argument is optional, so every existing call still means what it did.
 
   lposixpreload.c was added.  It registers every C submodule in
   package.preload under its dotted name, because an APE is statically
@@ -767,72 +885,323 @@ def vendor_lfs():
     print("==> vendored LuaFileSystem %s into %s" % (LFS_VERSION, LFS_DIR))
 
 
+# ------------------------------------------------------------ lpeg + http
+
+LPEG_PRELOAD_C = """/*-*- mode:c;indent-tabs-mode:nil;c-basic-offset:2;tab-width:8;coding:utf-8 -*-│
+│ vi: set et ft=c ts=2 sts=2 sw=2 fenc=utf-8                               :vi │
+╚──────────────────────────────────────────────────────────────────────────────╝
+│                                                                              │
+│  Preload registration for LPeg.  Generated by scripts/luaext.py.             │
+│                                                                              │
+╚─────────────────────────────────────────────────────────────────────────────*/
+#include "third_party/lpeg/lpegpreload.h"
+#include "third_party/lua/lauxlib.h"
+#include "third_party/lua/lua.h"
+
+__static_yoink("lpeg_notice");
+__static_yoink("zipos");
+
+void luaL_preloadlpeg(lua_State *L) {
+  luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
+  lua_pushcfunction(L, luaopen_lpeg);
+  lua_setfield(L, -2, "lpeg");
+  lua_pop(L, 1); /* remove PRELOAD table */
+}
+"""
+
+LPEG_PRELOAD_H = """#ifndef COSMOPOLITAN_THIRD_PARTY_LPEG_LPEGPRELOAD_H_
+#define COSMOPOLITAN_THIRD_PARTY_LPEG_LPEGPRELOAD_H_
+#include "third_party/lua/lua.h"
+COSMOPOLITAN_C_START_
+
+int luaopen_lpeg(lua_State *);
+
+/* puts LPeg in package.preload, so that `require "lpeg"` resolves
+   without a filesystem lookup.  re.lua, which builds on it, is in the
+   zip store at /zip/.lua/re.lua. */
+void luaL_preloadlpeg(lua_State *);
+
+COSMOPOLITAN_C_END_
+#endif /* COSMOPOLITAN_THIRD_PARTY_LPEG_LPEGPRELOAD_H_ */
+"""
+
+LPEG_NOTICE_C = """__notice(lpeg_notice, "\\
+LPeg %(version)s (MIT License)\\n\\
+Copyright 2007-2023 Lua.org, PUC-Rio.");
+"""
+
+LPEG_EXTRA = """$(THIRD_PARTY_LPEG_A_OBJS): private CFLAGS +=\\
+\t-ffunction-sections \\
+\t-fdata-sections
+
+# upstream's re.lua, the pattern-matching front end built on lpeg
+THIRD_PARTY_LPEG_LUAS = $(wildcard third_party/lpeg/.lua/*.lua)
+THIRD_PARTY_LPEG_ZIPOBJS =\\
+\t$(THIRD_PARTY_LPEG_LUAS:%=o/$(MODE)/%.zip.o)
+
+$(THIRD_PARTY_LPEG_ZIPOBJS): private ZIPOBJ_FLAGS +=\\
+\t-C2
+
+"""
+
+LPEG_README = '''DESCRIPTION
+
+  LPeg is a pattern-matching library for Lua based on Parsing Expression
+  Grammars.  lua-http parses URIs, HTTP header grammars and IP literals
+  with it, by way of lpeg_patterns.
+
+PROVENANCE
+
+  %(url)s
+  LPeg %(version)s
+  sha256 %(sha256)s
+
+  Imported by scripts/luaext.py.
+
+LOCAL MODIFICATIONS
+
+  Includes were rewritten to cosmopolitan's repository-root form, so
+  `#include "lua.h"` in lptypes.h became
+  `#include "third_party/lua/lua.h"`.
+
+  lpegpreload.c was added, which registers luaopen_lpeg in
+  package.preload so that `require "lpeg"` works in a static binary.
+
+  Nothing else.  All six translation units compiled against
+  cosmopolitan libc for x86_64 and aarch64 with no errors and no
+  warnings on the first attempt.
+'''
+
+LUAHTTP_README = '''DESCRIPTION
+
+  lua-http is an HTTP/1, HTTP/2 and websocket library for Lua, with a
+  client and a server.  This directory is the pure-Lua half of the
+  stack, stored in the binary's zip directory under /zip/.lua/, which
+  is the first entry of cosmo's LUA_PATH.
+
+PROVENANCE
+
+  %(luahttp_url)s          lua-http %(luahttp_version)s
+  %(patterns_url)s   lpeg_patterns %(patterns_version)s
+  %(basexx_url)s          basexx %(basexx_version)s
+  %(binaryheap_url)s      binaryheap %(binaryheap_version)s
+  %(fifo_url)s            fifo %(fifo_version)s
+
+  Imported by scripts/luaext.py.
+
+LOCAL MODIFICATIONS
+
+  None.  Every file here is upstream byte for byte.
+
+  lua-http's native dependencies are supplied from elsewhere rather
+  than by patching it.  lpeg comes from third_party/lpeg, zlib from
+  third_party/luazlib under the module name "zlib", and cqueues and
+  luaossl are replaced by the pure-Lua and mbedtls-backed
+  implementations in third_party/cqueues and third_party/luatls, which
+  publish themselves under the module names lua-http already requires.
+
+  compat53 is not needed, since every use of it in lua-http sits behind
+  a `string.pack or ...` fallback or a `_VERSION` test, and this is Lua
+  5.4.  psl is optional and absent, which makes http.cookie fall back to
+  a weaker domain check.
+'''
+
+
+def zip_build_mk(up, path, dirs, extra=""):
+    """a BUILD.mk for a package that is only Lua files in the zip store"""
+    t = [MK_HEADER, "\n"]
+    globs = " ".join("$(wildcard %s/.lua/%s*.lua)" % (path, d) for d in dirs)
+    t.append("%s_LUAS =\\\n\t%s\n\n" % (up, globs.replace(") $(", ") \\\n\t$(")))
+    t.append("%s_ZIPOBJS =\\\n\t$(%s_LUAS:%%=o/$(MODE)/%%.zip.o)\n\n" % (up, up))
+    t.append("# -C2 strips the leading %s/ from each zip entry name\n" % path)
+    t.append("$(%s_ZIPOBJS): private ZIPOBJ_FLAGS +=\\\n\t-C2\n\n" % up)
+    t.append(extra)
+    t.append(".PHONY: o/$(MODE)/%s\n" % path)
+    t.append("o/$(MODE)/%s: $(%s_ZIPOBJS)\n" % (path, up))
+    return "".join(t)
+
+
+def vendor_lpeg():
+    src = fetch(LPEG_URL, LPEG_SHA256, "lpeg.tar.gz")
+    if LPEG_DIR.exists():
+        shutil.rmtree(LPEG_DIR)
+    (LPEG_DIR / ".lua").mkdir(parents=True)
+    for p in sorted(src.glob("lp*.[ch]")):
+        shutil.copy(p, LPEG_DIR / p.name)
+    shutil.copy(src / "re.lua", LPEG_DIR / ".lua/re.lua")
+    for p in sorted(LPEG_DIR.glob("*.[ch]")):
+        text = p.read_text()
+        for old, new in GLOBAL_INCLUDE_REWRITES:
+            text = text.replace(old, new)
+        p.write_text(text)
+    (LPEG_DIR / "lpegpreload.h").write_text(LPEG_PRELOAD_H)
+    (LPEG_DIR / "lpegpreload.c").write_text(LPEG_PRELOAD_C)
+    (LPEG_DIR / "notice.c").write_text(LPEG_NOTICE_C % {"version": LPEG_VERSION})
+    (LPEG_DIR / "README.cosmo").write_text(LPEG_README % {
+        "url": LPEG_URL, "version": LPEG_VERSION, "sha256": LPEG_SHA256})
+    srcs = sorted("third_party/lpeg/" + f.name for f in LPEG_DIR.glob("*.c"))
+    hdrs = sorted("third_party/lpeg/" + f.name for f in LPEG_DIR.glob("*.h"))
+    (LPEG_DIR / "BUILD.mk").write_text(build_mk(
+        "THIRD_PARTY_LPEG", "third_party/lpeg", "lpeg", srcs, hdrs, [],
+        COMMON_DIRECTDEPS, LPEG_EXTRA,
+        ok_hdrs=["third_party/lpeg/lpegpreload.h"]))
+    print("==> vendored LPeg %s into %s" % (LPEG_VERSION, LPEG_DIR))
+
+
+def vendor_luahttp():
+    http = fetch(LUAHTTP_URL, LUAHTTP_SHA256, "lua-http.tar.gz")
+    patts = fetch(LPEG_PATTERNS_URL, LPEG_PATTERNS_SHA256, "lpeg_patterns.tar.gz")
+    basexx = fetch(BASEXX_URL, BASEXX_SHA256, "basexx.tar.gz")
+    heap = fetch(BINARYHEAP_URL, BINARYHEAP_SHA256, "binaryheap.tar.gz")
+    fifo = fetch(FIFO_URL, FIFO_SHA256, "fifo.tar.gz")
+    if LUAHTTP_DIR.exists():
+        shutil.rmtree(LUAHTTP_DIR)
+    lua = LUAHTTP_DIR / ".lua"
+    (lua / "http/compat").mkdir(parents=True)
+    (lua / "lpeg_patterns").mkdir(parents=True)
+    for p in sorted(http.glob("http/*.lua")):
+        shutil.copy(p, lua / "http" / p.name)
+    for p in sorted(http.glob("http/compat/*.lua")):
+        shutil.copy(p, lua / "http/compat" / p.name)
+    for p in sorted(patts.glob("lpeg_patterns/*.lua")):
+        shutil.copy(p, lua / "lpeg_patterns" / p.name)
+    shutil.copy(basexx / "lib/basexx.lua", lua / "basexx.lua")
+    shutil.copy(heap / "src/binaryheap.lua", lua / "binaryheap.lua")
+    shutil.copy(fifo / "fifo.lua", lua / "fifo.lua")
+    shutil.copy(http / "LICENSE.md", LUAHTTP_DIR / "LICENSE.md")
+    (LUAHTTP_DIR / "README.cosmo").write_text(LUAHTTP_README % {
+        "luahttp_url": LUAHTTP_URL, "luahttp_version": LUAHTTP_VERSION,
+        "patterns_url": LPEG_PATTERNS_URL,
+        "patterns_version": LPEG_PATTERNS_VERSION,
+        "basexx_url": BASEXX_URL, "basexx_version": BASEXX_VERSION,
+        "binaryheap_url": BINARYHEAP_URL,
+        "binaryheap_version": BINARYHEAP_VERSION,
+        "fifo_url": FIFO_URL, "fifo_version": FIFO_VERSION})
+    (LUAHTTP_DIR / "BUILD.mk").write_text(zip_build_mk(
+        "THIRD_PARTY_LUAHTTP", "third_party/luahttp",
+        ["", "http/", "http/compat/", "lpeg_patterns/"]))
+    n = len(list(lua.rglob("*.lua")))
+    print("==> vendored lua-http %s and its pure-Lua dependencies (%d files)"
+          % (LUAHTTP_VERSION, n))
+
+
 # ------------------------------------------------------------------ wire
 
-MAKEFILE_ANCHOR = "include third_party/lua/BUILD.mk"
-MAKEFILE_INSERT = ("include third_party/lfs/BUILD.mk\n"
-                   "include third_party/luaposix/BUILD.mk\n")
+# every edit is keyed by a marker, so wiring twice is a no-op and a
+# half-applied tree can be finished rather than started over.
+WIRE_EDITS = [
+    ("Makefile",
+     "include third_party/luahttp/BUILD.mk",
+     "include third_party/lua/BUILD.mk",
+     "include third_party/lfs/BUILD.mk\n"
+     "include third_party/luaposix/BUILD.mk\n"
+     "include third_party/lpeg/BUILD.mk\n"
+     "include third_party/luazlib/BUILD.mk\n"
+     "include third_party/luatls/BUILD.mk\n"
+     "include third_party/cqueues/BUILD.mk\n"
+     "include third_party/luahttp/BUILD.mk\n"
+     "include third_party/lua/BUILD.mk"),
 
-# appended at the end on purpose: LINKARGS reverses the prerequisite
-# order, so the last package listed here is the first archive on the link
-# line, which is where luaposix.a and lfs.a have to be relative to the
-# lua.a they take their lua_* symbols from.
-LUA_BUILD_MK_OLD = """	THIRD_PARTY_LUA_UNIX					\\
-	TOOL_ARGS
-"""
-LUA_BUILD_MK_NEW = """	THIRD_PARTY_LUA_UNIX					\\
-	TOOL_ARGS						\\
-	THIRD_PARTY_LFS						\\
-	THIRD_PARTY_LUAPOSIX
-"""
+    # appended at the end on purpose: LINKARGS reverses the prerequisite
+    # order, so the last package listed here is the first archive on the
+    # link line, which is where these have to be relative to the lua.a
+    # they take their lua_* symbols from.
+    ("third_party/lua/BUILD.mk",
+     "THIRD_PARTY_LPEG",
+     "\tTHIRD_PARTY_LUA_UNIX\t\t\t\t\t\\\n\tTOOL_ARGS\n",
+     "\tTHIRD_PARTY_LUA_UNIX\t\t\t\t\t\\\n"
+     "\tTOOL_ARGS\t\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LFS\t\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LPEG\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LUATLS\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LUAZLIB\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LUAPOSIX\n"),
 
-LUA_DBG_OLD = """o/$(MODE)/third_party/lua/lua.dbg:				\\
-		$(THIRD_PARTY_LUA_LUA_DEPS)			\\
-		o/$(MODE)/third_party/lua/lua.pkg		\\"""
-LUA_DBG_NEW = """o/$(MODE)/third_party/lua/lua.dbg:				\\
-		$(THIRD_PARTY_LUA_LUA_DEPS)			\\
-		$(THIRD_PARTY_LUAPOSIX_ZIPOBJS)			\\
-		o/$(MODE)/third_party/lua/lua.pkg		\\"""
+    ("third_party/lua/BUILD.mk",
+     "THIRD_PARTY_LUAHTTP_ZIPOBJS",
+     "o/$(MODE)/third_party/lua/lua.dbg:\t\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LUA_LUA_DEPS)\t\t\t\\\n",
+     "o/$(MODE)/third_party/lua/lua.dbg:\t\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LUA_LUA_DEPS)\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LUAPOSIX_ZIPOBJS)\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LPEG_ZIPOBJS)\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LUAHTTP_ZIPOBJS)\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_CQUEUES_ZIPOBJS)\t\t\t\\\n"
+     "\t\t$(THIRD_PARTY_LUATLS_ZIPOBJS)\t\t\t\\\n"),
 
-MAIN_OLD = """  luaL_requiref(L, "unix", LuaUnix, 1);
-  lua_pop(L, 1);"""
-MAIN_NEW = """  luaL_requiref(L, "unix", LuaUnix, 1);
-  lua_pop(L, 1);
-  /* these are in package.preload rather than loaded here, so that
-     `require "posix.unistd"` and `require "lfs"` work in copied code
-     without every script paying for thirty module tables it never
-     touches. */
-  luaL_preloadposix(L);
-  luaL_preloadlfs(L);"""
+    ("third_party/lua/lua.main.c",
+     "lpegpreload.h",
+     '#include "third_party/lua/lunix.h"',
+     '#include "third_party/lua/lunix.h"\n'
+     '#include "third_party/lfs/lfspreload.h"\n'
+     '#include "third_party/lpeg/lpegpreload.h"\n'
+     '#include "third_party/luaposix/lposixpreload.h"\n'
+     '#include "third_party/luatls/ltlspreload.h"\n'
+     '#include "third_party/luazlib/lzlibpreload.h"'),
 
-MAIN_INCLUDE_OLD = '#include "third_party/lua/lunix.h"'
-MAIN_INCLUDE_NEW = ('#include "third_party/lua/lunix.h"\n'
-                    '#include "third_party/lfs/lfspreload.h"\n'
-                    '#include "third_party/luaposix/lposixpreload.h"')
+    ("third_party/lua/lua.main.c",
+     "luaL_preloadlpeg",
+     "  luaL_requiref(L, \"unix\", LuaUnix, 1);\n  lua_pop(L, 1);\n",
+     "  luaL_requiref(L, \"unix\", LuaUnix, 1);\n"
+     "  lua_pop(L, 1);\n"
+     "  /* these are in package.preload rather than loaded here, so that\n"
+     "     `require \"posix.unistd\"`, `require \"lfs\"`, `require \"lpeg\"`\n"
+     "     and the rest work in copied code without every script paying\n"
+     "     for module tables it never touches. */\n"
+     "  luaL_preloadposix(L);\n"
+     "  luaL_preloadlfs(L);\n"
+     "  luaL_preloadlpeg(L);\n"
+     "  luaL_preloadzlib(L);\n"
+     "  luaL_preloadtls(L);\n"),
+]
 
-
-def wire_one(path, old, new, marker):
-    s = path.read_text()
-    if marker in s:
-        print("    %s already wired" % path.relative_to(ROOT))
-        return
-    if s.count(old) != 1:
-        sys.exit("error: %s: expected exactly one %r" % (path, old[:60]))
-    path.write_text(s.replace(old, new))
-    print("    wired %s" % path.relative_to(ROOT))
+# the luaposix-only wiring this script used to apply, which a tree
+# wired before lua-http arrived will already carry
+SUPERSEDED = [
+    ("third_party/lua/BUILD.mk",
+     "\tTHIRD_PARTY_LUA_UNIX\t\t\t\t\t\\\n"
+     "\tTOOL_ARGS\t\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LFS\t\t\t\t\t\t\\\n"
+     "\tTHIRD_PARTY_LUAPOSIX\n",
+     "\tTHIRD_PARTY_LUA_UNIX\t\t\t\t\t\\\n\tTOOL_ARGS\n"),
+    ("third_party/lua/BUILD.mk",
+     "\t\t$(THIRD_PARTY_LUAPOSIX_ZIPOBJS)\t\t\t\\\n", ""),
+    ("Makefile",
+     "include third_party/lfs/BUILD.mk\ninclude third_party/luaposix/BUILD.mk\n",
+     ""),
+    ("third_party/lua/lua.main.c",
+     '#include "third_party/lfs/lfspreload.h"\n'
+     '#include "third_party/luaposix/lposixpreload.h"\n', ""),
+    ("third_party/lua/lua.main.c",
+     "  /* these are in package.preload rather than loaded here, so that\n"
+     "     `require \"posix.unistd\"` and `require \"lfs\"` work in copied code\n"
+     "     without every script paying for thirty module tables it never\n"
+     "     touches. */\n"
+     "  luaL_preloadposix(L);\n"
+     "  luaL_preloadlfs(L);\n", ""),
+]
 
 
 def wire():
     print("==> wiring the monorepo build")
-    wire_one(ROOT / "Makefile", MAKEFILE_ANCHOR,
-             MAKEFILE_INSERT + MAKEFILE_ANCHOR,
-             "include third_party/luaposix/BUILD.mk")
-    mk = ROOT / "third_party/lua/BUILD.mk"
-    wire_one(mk, LUA_BUILD_MK_OLD, LUA_BUILD_MK_NEW, "THIRD_PARTY_LUAPOSIX")
-    wire_one(mk, LUA_DBG_OLD, LUA_DBG_NEW, "THIRD_PARTY_LUAPOSIX_ZIPOBJS")
-    main = ROOT / "third_party/lua/lua.main.c"
-    wire_one(main, MAIN_INCLUDE_OLD, MAIN_INCLUDE_NEW, "lposixpreload.h")
-    wire_one(main, MAIN_OLD, MAIN_NEW, "luaL_preloadposix")
+    # undo the narrower wiring from before lua-http, so the full set can
+    # be applied in one shape
+    for rel, old, new in SUPERSEDED:
+        f = ROOT / rel
+        t = f.read_text()
+        if old in t:
+            f.write_text(t.replace(old, new, 1))
+            print("    unwound superseded edit in %s" % rel)
+    for rel, marker, old, new in WIRE_EDITS:
+        f = ROOT / rel
+        t = f.read_text()
+        if marker in t:
+            print("    %s already has %s" % (rel, marker))
+            continue
+        if t.count(old) != 1:
+            sys.exit("error: %s: expected exactly one %r" % (rel, old[:60]))
+        f.write_text(t.replace(old, new, 1))
+        print("    wired %s (%s)" % (rel, marker))
 
 
 # ----------------------------------------------------------------- build
@@ -872,6 +1241,7 @@ def build():
 # ------------------------------------------------------------------ test
 
 TEST_LUA = ROOT / "scripts/luaext_test.lua"
+HTTP_TEST_LUA = ROOT / "scripts/luahttp_test.lua"
 
 
 def run_test(label, argv):
@@ -883,17 +1253,19 @@ def run_test(label, argv):
 
 
 def test():
-    t = TEST_LUA.relative_to(ROOT)
-    run_test("x86_64 native (fat APE)", ["o/lua.com", str(t)])
-    if shutil.which("qemu-aarch64"):
-        run_test("aarch64 under qemu",
-                 ["qemu-aarch64", "o/aarch64/third_party/lua/lua", str(t)])
-    else:
-        print("==> skipping aarch64: no qemu-aarch64 on PATH")
-    if shutil.which("wine"):
-        run_test("windows under wine", ["wine", "o/lua.com", str(t)])
-    else:
-        print("==> skipping windows: no wine on PATH")
+    for suite in (TEST_LUA, HTTP_TEST_LUA):
+        t = suite.relative_to(ROOT)
+        run_test("%s, x86_64 native (fat APE)" % t.name, ["o/lua.com", str(t)])
+        if shutil.which("qemu-aarch64"):
+            run_test("%s, aarch64 under qemu" % t.name,
+                     ["qemu-aarch64", "o/aarch64/third_party/lua/lua", str(t)])
+        else:
+            print("==> skipping aarch64: no qemu-aarch64 on PATH")
+        if shutil.which("wine"):
+            run_test("%s, windows under wine" % t.name,
+                     ["wine", "o/lua.com", str(t)])
+        else:
+            print("==> skipping windows: no wine on PATH")
     print("==> all tests passed")
 
 
@@ -905,6 +1277,8 @@ def main():
     if args.command in ("vendor", "all"):
         vendor_lfs()
         vendor_luaposix()
+        vendor_lpeg()
+        vendor_luahttp()
     if args.command in ("wire", "all"):
         wire()
     if args.command in ("build", "all"):

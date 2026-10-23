@@ -1,0 +1,50 @@
+DESCRIPTION
+
+  A reimplementation of the part of cqueues that lua-http uses, written
+  in Lua over luaposix.  This is not vendored code.  There is no
+  upstream to re-import from, and scripts/luaext.py does not generate
+  it.
+
+  It provides the module names lua-http requires, which are cqueues,
+  cqueues.socket, cqueues.condition, cqueues.errno and cqueues.auxlib,
+  plus cqueues.socket.tls, which bridges an openssl.ssl.context onto the
+  mbedtls engine in third_party/luatls.
+
+WHY NOT VENDOR UPSTREAM
+
+  cqueues' event core, src/lib/kpoll.c, has backends for epoll, kqueue
+  and Solaris ports, and for nothing else.  Cosmopolitan exposes none of
+  those on purpose, because none of them is portable to every platform
+  an APE runs on.  Vendoring cqueues would mean first writing a fourth
+  backend over poll(2).
+
+  Its socket layer is also wired directly to OpenSSL, including
+  <openssl/ssl.h> for starttls, so keeping it and using the mbedtls
+  already in this tree are contradictory goals.
+
+  And it is about 26,000 lines of C, most of which lua-http never
+  touches: its own DNS resolver, pthread-backed threads, inotify and
+  kqueue file notification, signal handling.  What lua-http actually
+  uses is ten module functions, one helper from auxlib, and 26 socket
+  methods.
+
+WHAT IS NOT HERE
+
+  Threads, the DNS resolver, file notification and signal handling.
+  Name resolution goes through luaposix's getaddrinfo, which blocks, so
+  a slow lookup stalls every coroutine in the scheduler.  That is
+  invisible to a server, which never resolves, and fine for a client
+  doing one request at a time.
+
+  Readiness checking is poll(2), which is linear in the number of
+  descriptors where cqueues on Linux would have been constant.  That is
+  a platform limit rather than a design choice.
+
+NOTES
+
+  The semantics that are easy to get wrong, and that lua-http depends
+  on, are documented at the point in the code where they matter: the
+  error convention of accept, negative byte counts as non-greedy reads,
+  the "*h" MIME header format, the buffering letters on xwrite, end of
+  file as a bare nil, eager connect, and controller nesting.  Read those
+  comments before changing any of it.

@@ -634,11 +634,12 @@ Precv(lua_State *L)
 {
 	int fd = checkint(L, 1);
 	size_t count = (size_t)checkinteger(L, 2);
+	int flags = optint(L, 3, 0);
 	ssize_t ret;
 	void *ud, *buf;
 	lua_Alloc lalloc;
 
-	checknargs(L, 2);
+	checknargs(L, 3);
 	lalloc = lua_getallocf(L, &ud);
 
 	/* Reset errno in case lalloc doesn't set it */
@@ -646,7 +647,7 @@ Precv(lua_State *L)
 	if ((buf = lalloc(ud, NULL, 0, count)) == NULL && count > 0)
 		return pusherror(L, "lalloc");
 
-	ret = recv(fd, buf, count, 0);
+	ret = recv(fd, buf, count, flags);
 	if (ret < 0)
 	{
 		lalloc(ud, buf, count, 0);
@@ -681,8 +682,9 @@ Precvfrom(lua_State *L)
 	lua_Alloc lalloc;
 	socklen_t salen;
 	struct sockaddr_storage sa;
+	int flags = optint(L, 3, 0);
 
-	checknargs(L, 2);
+	checknargs(L, 3);
 	lalloc = lua_getallocf(L, &ud);
 
 	/* Reset errno in case lalloc doesn't set it */
@@ -691,7 +693,7 @@ Precvfrom(lua_State *L)
 		return pusherror(L, "lalloc");
 
 	salen = sizeof(sa);
-	ret = recvfrom(fd, buf, count, 0, (struct sockaddr *)&sa, &salen);
+	ret = recvfrom(fd, buf, count, flags, (struct sockaddr *)&sa, &salen);
 	if (ret < 0)
 	{
 		lalloc(ud, buf, count, 0);
@@ -721,9 +723,10 @@ Psend(lua_State *L)
 	int fd = checkint (L, 1);
 	size_t len;
 	const char *buf = luaL_checklstring(L, 2, &len);
+	int flags = optint(L, 3, 0);
 
-	checknargs(L, 2);
-	return pushresult(L, send(fd, buf, len, 0), "send");
+	checknargs(L, 3);
+	return pushresult(L, send(fd, buf, len, flags), "send");
 }
 
 
@@ -747,11 +750,12 @@ Psendto(lua_State *L)
 	const char *buf = luaL_checklstring(L, 2, &len);
 	struct sockaddr_storage sa;
 	socklen_t salen;
-	checknargs (L, 3);
+	int flags = optint(L, 4, 0);
+	checknargs (L, 4);
 	if (sockaddr_from_lua(L, 3, &sa, &salen) != 0)
 		return pusherror (L, "not a valid IPv4 or IPv6 argument");
 
-	return pushresult(L, sendto(fd, buf, len, 0, (struct sockaddr *)&sa, salen), "sendto");
+	return pushresult(L, sendto(fd, buf, len, flags, (struct sockaddr *)&sa, salen), "sendto");
 }
 
 
@@ -1217,6 +1221,16 @@ luaopen_posix_sys_socket(lua_State *L)
 # ifdef SOCK_RAW
 	LPOSIX_CONST( SOCK_RAW		);
 # endif
+	/* cosmo: message flags, which upstream does not bind */
+	LPOSIX_CONST( MSG_OOB		);
+	LPOSIX_CONST( MSG_PEEK		);
+	LPOSIX_CONST( MSG_DONTROUTE	);
+	LPOSIX_CONST( MSG_DONTWAIT	);
+	LPOSIX_CONST( MSG_WAITALL	);
+	LPOSIX_CONST( MSG_NOSIGNAL	);
+	LPOSIX_CONST( MSG_TRUNC		);
+	LPOSIX_CONST( MSG_CTRUNC	);
+
 	LPOSIX_CONST( SHUT_RD		);
 	LPOSIX_CONST( SHUT_WR		);
 	LPOSIX_CONST( SHUT_RDWR		);

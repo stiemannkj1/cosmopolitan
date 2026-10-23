@@ -37,6 +37,13 @@ LOCAL MODIFICATIONS
   ...) at link time, so they cannot appear as case labels or in static
   initializers.  The control flow is otherwise untouched.
 
+  sys/socket.c gained the MSG_* constants, which upstream binds
+  nowhere, and an optional flags argument on send, recv, sendto and
+  recvfrom, which upstream hard-codes to 0.  Without MSG_NOSIGNAL there
+  is no way to stop a write to a closed socket from raising SIGPIPE and
+  killing the process, short of ignoring the signal globally.  The
+  argument is optional, so every existing call still means what it did.
+
   lposixpreload.c was added.  It registers every C submodule in
   package.preload under its dotted name, because an APE is statically
   linked and there is no .so for Lua's C loader to dlopen.

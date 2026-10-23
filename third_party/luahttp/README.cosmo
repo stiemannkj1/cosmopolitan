@@ -1,0 +1,32 @@
+DESCRIPTION
+
+  lua-http is an HTTP/1, HTTP/2 and websocket library for Lua, with a
+  client and a server.  This directory is the pure-Lua half of the
+  stack, stored in the binary's zip directory under /zip/.lua/, which
+  is the first entry of cosmo's LUA_PATH.
+
+PROVENANCE
+
+  https://github.com/daurnimator/lua-http/archive/refs/tags/v0.4.tar.gz          lua-http 0.4
+  https://github.com/daurnimator/lpeg_patterns/archive/refs/tags/v0.5.tar.gz   lpeg_patterns 0.5
+  https://github.com/aiq/basexx/archive/refs/tags/v0.4.1.tar.gz          basexx 0.4.1
+  https://github.com/Tieske/binaryheap.lua/archive/refs/tags/version_0v4.tar.gz      binaryheap 0v4
+  https://github.com/daurnimator/fifo.lua/archive/refs/tags/0.2.tar.gz            fifo 0.2
+
+  Imported by scripts/luaext.py.
+
+LOCAL MODIFICATIONS
+
+  None.  Every file here is upstream byte for byte.
+
+  lua-http's native dependencies are supplied from elsewhere rather
+  than by patching it.  lpeg comes from third_party/lpeg, zlib from
+  third_party/luazlib under the module name "zlib", and cqueues and
+  luaossl are replaced by the pure-Lua and mbedtls-backed
+  implementations in third_party/cqueues and third_party/luatls, which
+  publish themselves under the module names lua-http already requires.
+
+  compat53 is not needed, since every use of it in lua-http sits behind
+  a `string.pack or ...` fallback or a `_VERSION` test, and this is Lua
+  5.4.  psl is optional and absent, which makes http.cookie fall back to
+  a weaker domain check.

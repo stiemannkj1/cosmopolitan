@@ -1,0 +1,59 @@
+DESCRIPTION
+
+  TLS for lua-http, over the mbedtls already vendored in
+  third_party/mbedtls.  Hand-written, not vendored.
+
+  The C half, ltls.c and ltlsengine.c, is deliberately small: random
+  bytes, message digests, and a non-blocking TLS engine.  The engine
+  owns no event loop.  Every call answers either a result or one of the
+  strings "want_read" and "want_write", and whoever owns the poll loop,
+  which is third_party/cqueues, waits and calls again.
+
+  The Lua half, under .lua/openssl/, is the luaossl-shaped API that
+  lua-http requires: openssl.ssl, openssl.ssl.context, openssl.pkey,
+  openssl.x509, openssl.x509.verify_param, openssl.x509.name,
+  openssl.x509.altname, openssl.rand, openssl.digest and
+  openssl.bignum.  A context is a plain record of what the caller asked
+  for, and cqueues/socket/tls.lua turns it into mbedtls configuration
+  when a handshake actually starts.
+
+HOW THE OPENSSL CALLS MAP
+
+  setOptions becomes a version floor, setGroups and setEphemeralKey
+  become a curve list, setAlpnProtos and getAlpnSelected become mbedtls'
+  ALPN pair, setHostName and the verify parameter's setHost become
+  mbedtls_ssl_set_hostname, which also drives SNI, setVerify becomes
+  conf_authmode, and setStore with addDefaults becomes conf_ca_chain over
+  GetSslRoots().
+
+  setCipherList is translated rather than ignored.  jart's mbedtls fork
+  names its ciphersuites with OpenSSL spellings, so lua-http's strings
+  mostly match outright; two spellings differ mechanically and are
+  normalised in cqueues/socket/tls.lua.  Concrete names that do not
+  resolve are dropped, OpenSSL's grouping and exclusion atoms such as
+  HIGH and !aNULL are ignored because mbedtls has no equivalent, and a
+  list that resolves to nothing at all raises rather than quietly
+  falling back to mbedtls' defaults.
+
+LIMITATIONS
+
+  TLS 1.2 is the ceiling, because this mbedtls has 1.3 compiled out.
+
+  Certificate generation is not implemented, so lua-http's convenience
+  path for inventing a self-signed server certificate does not work.  A
+  TLS server needs a certificate supplied.
+
+  setAlpnSelect cannot be honoured as a callback, since mbedtls selects
+  internally from the configured list.  Configuring the list gets the
+  same outcome for every use lua-http makes of it.
+
+TWO THINGS WORTH KNOWING
+
+  mbedtls' contexts want stronger alignment than the body of a Lua
+  userdata gives, so the engine lives in malloc'd memory with a pointer
+  in the userdata.  Holding the config inline segfaults.
+
+  A curve id the library does not have fails the handshake with
+  BAD_CONFIG rather than being ignored, so the curve list is filtered
+  through mbedtls_ecp_curve_info_from_grp_id.  lua-http asks for P-521,
+  which this mbedtls does not have.

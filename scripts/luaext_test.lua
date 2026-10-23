@@ -293,6 +293,54 @@ test('setsockopt SO_RCVTIMEO makes recv time out', function()
         'unexpected errno %s (%s)', tostring(errnum), tostring(err))
 end)
 
+-- a connected TCP pair on loopback, for the flag tests below.  a
+-- socketpair would be the obvious choice, but cosmopolitan emulates
+-- those with named pipes on windows, and named pipes reject the MSG_*
+-- flags with EINVAL.
+local function tcp_pair()
+   local srv = must('socket', S.socket(S.AF_INET, S.SOCK_STREAM, 0))
+   must('bind', S.bind(srv, {family = S.AF_INET, addr = '127.0.0.1', port = 0}))
+   must('listen', S.listen(srv, 2))
+   local port = must('getsockname', S.getsockname(srv)).port
+   local cli = must('socket', S.socket(S.AF_INET, S.SOCK_STREAM, 0))
+   must('connect', S.connect(cli, {family = S.AF_INET, addr = '127.0.0.1',
+                                   port = port}))
+   local con = must('accept', S.accept(srv))
+   U.close(srv)
+   return cli, con
+end
+
+test('MSG_NOSIGNAL turns a write to a closed peer into EPIPE', function()
+   want(type(S.MSG_NOSIGNAL) == 'number', 'MSG_NOSIGNAL is not bound')
+   -- with SIGPIPE at its default disposition, a send() without the flag
+   -- would kill this process rather than return
+   Sig.signal(Sig.SIGPIPE, Sig.SIG_DFL)
+   local cli, con = tcp_pair()
+   U.close(con)
+   -- the first write after the peer's FIN still succeeds, the error
+   -- arrives once the RST comes back
+   local r, err, errnum
+   for _ = 1, 50 do
+      r, err, errnum = S.send(cli, 'into the void', S.MSG_NOSIGNAL)
+      if r == nil then break end
+      T.nanosleep({tv_sec = 0, tv_nsec = 10000000})
+   end
+   U.close(cli)
+   want(r == nil, 'writes to a closed peer never failed')
+   want(errnum == E.EPIPE or errnum == E.ECONNRESET,
+        'unexpected errno %s (%s)', tostring(errnum), tostring(err))
+end)
+
+test('MSG_PEEK leaves the data in the buffer', function()
+   local cli, con = tcp_pair()
+   must('send', S.send(cli, 'peekable'))
+   want(must('peek', S.recv(con, 32, S.MSG_PEEK)) == 'peekable', 'peek failed')
+   want(must('recv', S.recv(con, 32)) == 'peekable', 'peek consumed the data')
+   must('send plain', S.send(cli, 'plain'))  -- flags stay optional
+   want(must('recv plain', S.recv(con, 32)) == 'plain', 'two-arg form broke')
+   U.close(cli) U.close(con)
+end)
+
 test('getsockopt SO_TYPE', function()
    local fd = must('socket', S.socket(S.AF_INET, S.SOCK_STREAM, 0))
    local v = must('getsockopt', S.getsockopt(fd, S.SOL_SOCKET, S.SO_TYPE))

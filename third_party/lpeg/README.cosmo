@@ -1,0 +1,26 @@
+DESCRIPTION
+
+  LPeg is a pattern-matching library for Lua based on Parsing Expression
+  Grammars.  lua-http parses URIs, HTTP header grammars and IP literals
+  with it, by way of lpeg_patterns.
+
+PROVENANCE
+
+  http://www.inf.puc-rio.br/~roberto/lpeg/lpeg-1.1.0.tar.gz
+  LPeg 1.1.0
+  sha256 4b155d67d2246c1ffa7ad7bc466c1ea899bbc40fef0257cc9c03cecbaed4352a
+
+  Imported by scripts/luaext.py.
+
+LOCAL MODIFICATIONS
+
+  Includes were rewritten to cosmopolitan's repository-root form, so
+  `#include "lua.h"` in lptypes.h became
+  `#include "third_party/lua/lua.h"`.
+
+  lpegpreload.c was added, which registers luaopen_lpeg in
+  package.preload so that `require "lpeg"` works in a static binary.
+
+  Nothing else.  All six translation units compiled against
+  cosmopolitan libc for x86_64 and aarch64 with no errors and no
+  warnings on the first attempt.

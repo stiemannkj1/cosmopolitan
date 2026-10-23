@@ -173,7 +173,7 @@ strict standalone-header check for the four headers written here.
 Upstream's own `lfs.h` is excluded from that check because it names
 `lua_State` without including `lua.h`.
 
-`scripts/luaext_test.lua` is a 59-case functional suite, not a smoke
+`scripts/luaext_test.lua` is a 61-case functional suite, not a smoke
 test. It opens and truncates files, locks them with `fcntl` and with
 `lfs.lock`, walks directories through both `posix.dirent` and `lfs.dir`,
 makes hard and symbolic links, runs a full TCP loopback conversation
@@ -183,7 +183,8 @@ loopback round trip, a `socketpair`, a `SO_RCVTIMEO` timeout, `poll` and
 `rpoll`, `fork` with `wait` status decoding and a pipe between parent and
 child, `dup2`, signal delivery through `raise`, clocks, `nanosleep`,
 `uname`, `getpwuid`, `statvfs`, `getrlimit`, `glob`, `fnmatch`,
-`mkdtemp`, `mkstemp`, `realpath`, `setenv`, the whole `lfs` surface
+`mkdtemp`, `mkstemp`, `realpath`, `setenv`, `MSG_NOSIGNAL` and
+`MSG_PEEK`, the whole `lfs` surface
 including `lock_dir`, `touch` and `setmode`, the pure-Lua aggregate
 `posix` module loaded out of the zip store, and cosmo's own `unix`
 module alongside it. A call that fails with an errno meaning the host
@@ -191,14 +192,15 @@ does not have the feature is reported as unsupported, anything else is a
 failure, and the exit status is nonzero if anything failed.
 
 It passes with zero failures in all three places. On Linux x86_64
-against the fat APE, 58 passed and 1 unsupported. On aarch64 under
-`qemu-aarch64` against the per-arch binary, the same 58 and 1. On
-Windows under `wine` against the fat APE, 53 passed and 6 unsupported.
+against the fat APE, 60 passed and 1 unsupported. On aarch64 under
+`qemu-aarch64` against the per-arch binary, the same 60 and 1. On
+Windows under `wine` against the fat APE, 55 passed and 6 unsupported.
 All twenty-eight C submodules load and expose 150 functions, identically
 on Linux and on Windows.
 
-Writing the suite paid for itself twice, because it found two bindings
-that were silently missing rather than broken. `posix.stdlib.mkdtemp`
+Writing the suite paid for itself three times over. It found two
+bindings that were silently missing rather than broken, and a third gap
+that was a deliberate upstream omission. `posix.stdlib.mkdtemp`
 was a stub that answered "not implemented by host C library", because
 upstream gates it on `_POSIX_C_SOURCE` and `_XOPEN_SOURCE`, which
 cosmopolitan does not set even though it sets `_POSIX_VERSION` to
@@ -207,6 +209,17 @@ cosmopolitan does not set even though it sets `_POSIX_VERSION` to
 them on `_POSIX_TIMERS`, which cosmopolitan never defines although it
 has both functions and advertises `_POSIX_MONOTONIC_CLOCK`. Both are now
 turned on in `cosmo.h` and both work.
+
+The third is `MSG_NOSIGNAL`. Upstream luaposix binds no `MSG_*`
+constants at all and hard-codes the flags argument of `send`, `recv`,
+`sendto` and `recvfrom` to 0, which leaves a Lua caller no way to stop a
+write to a closed socket from raising SIGPIPE and killing the process.
+The vendored copy now binds the eight `MSG_*` flags cosmopolitan has and
+takes flags as an optional trailing argument on all four calls, so
+existing two-argument calls keep working unchanged. Testing it turned up
+a platform wart worth knowing. Cosmopolitan emulates `socketpair` with
+named pipes on Windows, and named pipes reject the `MSG_*` flags with
+EINVAL, so on Windows the flags work on real sockets only.
 
 Size cost. The x86_64 binary goes from 1,165,948 to 1,359,934 bytes, the
 aarch64 one from 1,019,348 to 1,238,550, and the fat APE lands at

@@ -242,6 +242,9 @@ THIRD_PARTY_LUA_LUA_DIRECTDEPS =				\
 	THIRD_PARTY_LUA_UNIX					\
 	TOOL_ARGS						\
 	THIRD_PARTY_LFS						\
+	THIRD_PARTY_LPEG					\
+	THIRD_PARTY_LUATLS					\
+	THIRD_PARTY_LUAZLIB					\
 	THIRD_PARTY_LUAPOSIX
 
 THIRD_PARTY_LUA_LUA_DEPS :=					\
@@ -254,6 +257,10 @@ o/$(MODE)/third_party/lua/lua.pkg:				\
 o/$(MODE)/third_party/lua/lua.dbg:				\
 		$(THIRD_PARTY_LUA_LUA_DEPS)			\
 		$(THIRD_PARTY_LUAPOSIX_ZIPOBJS)			\
+		$(THIRD_PARTY_LPEG_ZIPOBJS)			\
+		$(THIRD_PARTY_LUAHTTP_ZIPOBJS)			\
+		$(THIRD_PARTY_CQUEUES_ZIPOBJS)			\
+		$(THIRD_PARTY_LUATLS_ZIPOBJS)			\
 		o/$(MODE)/third_party/lua/lua.pkg		\
 		o/$(MODE)/third_party/lua/lua.main.o		\
 		$(CRT)						\

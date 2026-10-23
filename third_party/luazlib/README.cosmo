@@ -1,0 +1,22 @@
+DESCRIPTION
+
+  A lua-zlib compatible binding over the zlib already vendored in
+  third_party/zlib.  Hand-written, not vendored.
+
+  lua-http's http/zlib.lua accepts either of the two Lua bindings that
+  claim the module name "zlib", picking its calling convention from the
+  _VERSION string.  This presents the lua-zlib one, because that
+  interface is a pair of stream closures and maps cleanly onto zlib's
+  own inflate and deflate.
+
+  Only what http/zlib.lua uses is implemented: _VERSION, inflate() and
+  deflate().
+
+LOCAL DEVIATION
+
+  lua-zlib defaults deflate's windowBits to MAX_WBITS, which is the raw
+  zlib framing.  This defaults to MAX_WBITS+16, which is gzip, because
+  the only caller is lua-http and the only thing it does with the output
+  is serve it as `transfer-encoding: gzip`.  Pass windowBits explicitly
+  for other framings.  inflate defaults to automatic detection of either,
+  which matches lua-zlib.

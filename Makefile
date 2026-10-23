@@ -315,6 +315,11 @@ include net/finger/BUILD.mk
 include third_party/double-conversion/test/BUILD.mk
 include third_party/lfs/BUILD.mk
 include third_party/luaposix/BUILD.mk
+include third_party/lpeg/BUILD.mk
+include third_party/luazlib/BUILD.mk
+include third_party/luatls/BUILD.mk
+include third_party/cqueues/BUILD.mk
+include third_party/luahttp/BUILD.mk
 include third_party/lua/BUILD.mk
 include third_party/tree/BUILD.mk
 include third_party/zstd/BUILD.mk
