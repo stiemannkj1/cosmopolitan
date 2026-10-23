@@ -50,6 +50,8 @@
 #include "third_party/lua/lrepl.h"
 #include "third_party/lua/lualib.h"
 #include "third_party/lua/lunix.h"
+#include "third_party/lfs/lfspreload.h"
+#include "third_party/luaposix/lposixpreload.h"
 #include "libc/cosmo.h"
 #include "libc/mem/leaks.h"
 __static_yoink("lua_notice");
@@ -376,6 +378,12 @@ static int pmain (lua_State *L) {
   luaL_openlibs(L);  /* open standard libraries */
   luaL_requiref(L, "unix", LuaUnix, 1);
   lua_pop(L, 1);
+  /* these are in package.preload rather than loaded here, so that
+     `require "posix.unistd"` and `require "lfs"` work in copied code
+     without every script paying for thirty module tables it never
+     touches. */
+  luaL_preloadposix(L);
+  luaL_preloadlfs(L);
   createargtable(L, argv, argc, script);  /* create table 'arg' */
   lua_gc(L, LUA_GCRESTART);  /* start GC... */
   lua_gc(L, LUA_GCGEN, 0, 0);  /* ...in generational mode */

@@ -1,0 +1,24 @@
+DESCRIPTION
+
+  LuaFileSystem exposes directory iteration, stat/lstat, symlinks, file
+  locking, and mkdir/rmdir/chdir to Lua as the `lfs` module.
+
+PROVENANCE
+
+  https://github.com/lunarmodules/luafilesystem/archive/refs/tags/v1_8_0.tar.gz
+  LuaFileSystem 1.8.0
+  sha256 16d17c788b8093f2047325343f5e9b74cccb1ea96001e45914a58bbae8932495
+
+  Imported by scripts/luaext.py.
+
+LOCAL MODIFICATIONS
+
+  Includes were rewritten to cosmopolitan's repository-root form, e.g.
+  `#include <lua.h>` became `#include "third_party/lua/lua.h"`.
+
+  lfspreload.c was added, which registers luaopen_lfs in
+  package.preload so that `require "lfs"` works in a static binary.
+
+  lfs.c itself is otherwise unmodified: it compiled against
+  cosmopolitan libc for both x86_64 and aarch64 without a single
+  warning on the first try.

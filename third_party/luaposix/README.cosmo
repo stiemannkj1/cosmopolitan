@@ -1,0 +1,49 @@
+DESCRIPTION
+
+  luaposix is a POSIX binding for Lua: fork/exec, stat, dirent, fcntl,
+  termios, sockets, signals, glob, and so forth, split into one module
+  per POSIX header (posix.unistd, posix.sys.stat, ...).
+
+PROVENANCE
+
+  https://github.com/luaposix/luaposix/archive/refs/tags/v36.3.tar.gz
+  luaposix 36.3
+  sha256 82cd9a96c41a4a3205c050206f0564ff4456f773a8f9ffc9235ff8f1907ca5e6
+
+  Imported by scripts/luaext.py, which performs every modification
+  listed below.  Re-run `scripts/luaext.py vendor` to reproduce this
+  directory from upstream; it fails loudly if upstream has moved any of
+  the code it patches.
+
+LOCAL MODIFICATIONS
+
+  Quoted includes were rewritten to cosmopolitan's repository-root form,
+  e.g. `#include "lua.h"` became `#include "third_party/lua/lua.h"`, so
+  that the monorepo's -nostdinc -iquote. build and its header dependency
+  scanner both resolve them.  Upstream's unity build is kept: posix.c is
+  the only translation unit, and it #includes the other twenty-eight.
+
+  cosmo.h was added, and is force-included ahead of every translation
+  unit (see BUILD.mk).  It supplies PACKAGE/VERSION, the HAVE_* feature
+  macros that upstream normally gets from autoconf, a mkfifo() wrapper
+  around mknod() and an ENOSYS if_nametoindex(), neither of which
+  cosmopolitan libc has.  HAVE_GETHOSTID is 0 because cosmopolitan
+  declares gethostid() without implementing it.
+
+  fcntl.c, poll.c and sys/socket.c had `switch` statements rewritten to
+  dispatch on locally computed codes.  Cosmopolitan resolves constants
+  whose value differs across the platforms one APE binary runs on
+  (F_SETLK, POLLIN, AF_INET6, SOL_SOCKET, SO_LINGER, IPV6_JOIN_GROUP,
+  ...) at link time, so they cannot appear as case labels or in static
+  initializers.  The control flow is otherwise untouched.
+
+  lposixpreload.c was added.  It registers every C submodule in
+  package.preload under its dotted name, because an APE is statically
+  linked and there is no .so for Lua's C loader to dlopen.
+
+  lib/posix/*.lua became .lua/posix/*.lua, which BUILD.mk stores in the
+  binary's zip directory; /zip/.lua/?.lua is the first entry of cosmo's
+  LUA_PATH.  version.lua was generated from upstream's version.lua.in.
+
+  The parts of upstream that only matter to its own build (configure.ac,
+  Makefile.am, slingshot, specs, docs) were not imported.

@@ -240,7 +240,9 @@ THIRD_PARTY_LUA_LUA_DIRECTDEPS =				\
 	THIRD_PARTY_LINENOISE					\
 	THIRD_PARTY_LUA						\
 	THIRD_PARTY_LUA_UNIX					\
-	TOOL_ARGS
+	TOOL_ARGS						\
+	THIRD_PARTY_LFS						\
+	THIRD_PARTY_LUAPOSIX
 
 THIRD_PARTY_LUA_LUA_DEPS :=					\
 	$(call uniq,$(foreach x,$(THIRD_PARTY_LUA_LUA_DIRECTDEPS),$($(x))))
@@ -251,6 +253,7 @@ o/$(MODE)/third_party/lua/lua.pkg:				\
 
 o/$(MODE)/third_party/lua/lua.dbg:				\
 		$(THIRD_PARTY_LUA_LUA_DEPS)			\
+		$(THIRD_PARTY_LUAPOSIX_ZIPOBJS)			\
 		o/$(MODE)/third_party/lua/lua.pkg		\
 		o/$(MODE)/third_party/lua/lua.main.o		\
 		$(CRT)						\

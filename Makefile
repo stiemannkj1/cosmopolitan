@@ -313,6 +313,8 @@ include third_party/linenoise/BUILD.mk
 include third_party/maxmind/BUILD.mk
 include net/finger/BUILD.mk
 include third_party/double-conversion/test/BUILD.mk
+include third_party/lfs/BUILD.mk
+include third_party/luaposix/BUILD.mk
 include third_party/lua/BUILD.mk
 include third_party/tree/BUILD.mk
 include third_party/zstd/BUILD.mk
