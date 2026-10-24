@@ -516,9 +516,15 @@ static int LuaUnixReadlink(lua_State *L) {
   size_t got;
   ssize_t rc;
   luaL_Buffer lb;
-  int olderr = errno;
-  if ((rc = readlinkat(luaL_optinteger(L, 2, AT_FDCWD), luaL_checkstring(L, 1),
-                       luaL_buffinitsize(L, &lb, BUFSIZ), BUFSIZ)) != -1) {
+  const char *path;
+  int dirfd, olderr = errno;
+  // the arguments have to be read before the buffer is initialized, since
+  // luaL_buffinitsize() pushes a box that would otherwise be mistaken for
+  // the optional dirfd argument
+  path = luaL_checkstring(L, 1);
+  dirfd = luaL_optinteger(L, 2, AT_FDCWD);
+  if ((rc = readlinkat(dirfd, path, luaL_buffinitsize(L, &lb, BUFSIZ),
+                       BUFSIZ)) != -1) {
     if ((got = rc) < BUFSIZ) {
       luaL_pushresultsize(&lb, got);
       return 1;
@@ -767,6 +773,24 @@ static int LuaUnixFcntl(lua_State *L) {
   } else {
     return SysretBool(L, "fcntl", olderr,
                       fcntl(fd, cmd, luaL_optinteger(L, 3, 0)));
+  }
+}
+
+// unix.fileno(file:<file>)
+//     ├─→ fd:int
+//     └─→ nil, unix.Errno
+static int LuaUnixFileno(lua_State *L) {
+  int fd, olderr = errno;
+  luaL_Stream *p = luaL_checkudata(L, 1, LUA_FILEHANDLE);
+  if (!p->closef) {
+    luaL_error(L, "attempt to use a closed file");
+    __builtin_unreachable();
+  }
+  if ((fd = fileno(p->f)) != -1) {
+    lua_pushinteger(L, fd);
+    return 1;
+  } else {
+    return LuaUnixSysretErrno(L, "fileno", olderr);
   }
 }
 
@@ -3249,6 +3273,7 @@ static const luaL_Reg kLuaUnix[] = {
     {"fcntl", LuaUnixFcntl},              // manipulate file descriptor
     {"fdatasync", LuaUnixFdatasync},      // flush open file w/o metadata
     {"fdopendir", LuaUnixFdopendir},      // read directory entry list
+    {"fileno", LuaUnixFileno},            // get descriptor of stdio file
     {"fork", LuaUnixFork},                // make child process via mitosis
     {"fstat", LuaUnixFstat},              // get file info from fd
     {"fstatfs", LuaUnixFstatfs},          // get filesystem info from fd

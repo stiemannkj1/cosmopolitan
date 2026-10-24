@@ -10,27 +10,45 @@
      to run on platforms that genuinely lack them.  Anything else is a
      failure.  Exit status is 0 only when nothing failed. ]]
 
-local lfs = require 'lfs'
-local posix = require 'posix'
-local E = require 'posix.errno'
-local F = require 'posix.fcntl'
-local U = require 'posix.unistd'
-local St = require 'posix.sys.stat'
-local S = require 'posix.sys.socket'
-local D = require 'posix.dirent'
-local P = require 'posix.poll'
-local T = require 'posix.time'
-local Sl = require 'posix.stdlib'
-local Sig = require 'posix.signal'
-local W = require 'posix.sys.wait'
+local function optional(name)
+   local ok, mod = pcall(require, name)
+   if ok then return mod end
+   return nil
+end
+
+-- redbean carries the pure-Lua reimplementation as 'cosmo-lfs' and has no
+-- 'lfs', while the cosmopolitan lua carries the real C 'lfs'.  preferring
+-- cosmo-lfs means that putting tool/net/.lua on LUA_PATH runs this whole
+-- suite against the reimplementation under either binary.
+local lfs = optional 'cosmo-lfs' or require 'lfs'
+
+-- luaposix is absent from redbean, so the luaposix groups report
+-- themselves as unsupported there rather than failing to load
+local posix = optional 'posix'
+local HAVE_POSIX = posix ~= nil
+local function posixmod(name)
+   return HAVE_POSIX and require(name) or {}
+end
+local E = posixmod 'posix.errno'
+local F = posixmod 'posix.fcntl'
+local U = posixmod 'posix.unistd'
+local St = posixmod 'posix.sys.stat'
+local S = posixmod 'posix.sys.socket'
+local D = posixmod 'posix.dirent'
+local P = posixmod 'posix.poll'
+local T = posixmod 'posix.time'
+local Sl = posixmod 'posix.stdlib'
+local Sig = posixmod 'posix.signal'
+local W = posixmod 'posix.sys.wait'
 
 local npass, nfail, nskip = 0, 0, 0
 local failed = {}
 
-local UNSUPPORTED = {
-   [E.ENOSYS] = true, [E.EPERM] = true, [E.ENOTSUP] = true,
-   [E.EOPNOTSUPP] = true, [E.EAFNOSUPPORT] = true, [E.EPROTONOSUPPORT] = true,
-}
+local UNSUPPORTED = {}
+for _, name in ipairs{'ENOSYS', 'EPERM', 'ENOTSUP', 'EOPNOTSUPP',
+                      'EAFNOSUPPORT', 'EPROTONOSUPPORT'} do
+   if E[name] then UNSUPPORTED[E[name]] = true end
+end
 
 local function skip(why)
    error({skip = why or 'unsupported'}, 0)
@@ -56,7 +74,16 @@ local function want(cond, fmt, ...)
    end
 end
 
+-- set by group() to a reason string whenever the whole group depends on a
+-- module this binary does not have
+local skipgroup = nil
+
 local function test(name, fn)
+   if skipgroup then
+      nskip = nskip + 1
+      io.write(string.format('  unsup     %s  (%s)\n', name, skipgroup))
+      return
+   end
    local ok, err = pcall(fn)
    if ok then
       npass = npass + 1
@@ -71,7 +98,11 @@ local function test(name, fn)
    end
 end
 
+local LFS_GROUP = 'luafilesystem'
+
 local function group(name)
+   skipgroup = (not HAVE_POSIX and name ~= LFS_GROUP)
+      and 'luaposix is not in this binary' or nil
    io.write(string.format('\n%s\n', name))
 end
 
@@ -107,9 +138,11 @@ end
 rmtree(WORK)
 assert(lfs.mkdir(WORK))
 
-io.write(string.format('%s  %s  posix %s  lfs %s\n', _VERSION,
-                       jit and 'luajit' or 'puc', require 'posix.version',
-                       lfs._VERSION))
+io.write(string.format('%s  %s  posix %s  lfs %s (%s)\n', _VERSION,
+                       jit and 'luajit' or 'puc',
+                       HAVE_POSIX and require 'posix.version' or 'absent',
+                       lfs._VERSION,
+                       optional 'cosmo-lfs' and 'cosmo-lfs' or 'c module'))
 
 --------------------------------------------------------------------- files
 

@@ -3768,6 +3768,18 @@ UNIX MODULE
     These functions are used to make programs slower by asking the
     operating system to flush data to the physical medium.
 
+  unix.fileno(file:<file>)
+      ├─→ fd:int
+      └─→ nil, unix.Errno
+
+    Returns the file descriptor behind a Lua file object, e.g. one that
+    came back from `io.open()`. This is what lets the stdio layer and the
+    descriptor layer be used on the same file, for example to lock a file
+    opened with `io.open()` using `unix.fcntl()`.
+
+    Raises an error if the argument is not a file, or if the file has
+    already been closed.
+
   unix.lseek(fd:int, offset:int[, whence:int])
       ├─→ newposbytes:int
       └─→ nil, unix.Errno
