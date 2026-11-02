@@ -108,6 +108,7 @@ o/$(MODE)/tool/net/redbean.dbg:						\
 		o/$(MODE)/tool/net/.init.lua.zip.o			\
 		o/$(MODE)/tool/net/.lua/.zip.o				\
 		o/$(MODE)/tool/net/.lua/cosmo-lfs.lua.zip.o		\
+		o/$(MODE)/tool/net/.lua/cosmo-spawn.lua.zip.o		\
 		o/$(MODE)/tool/net/favicon.ico.zip.o			\
 		o/$(MODE)/tool/net/redbean.png.zip.o			\
 		o/$(MODE)/tool/net/help.txt.zip.o			\
@@ -169,7 +170,8 @@ o/$(MODE)/tool/net/demo/.lua/mymodule.lua.zip.o: private		\
 			-C3
 
 o/$(MODE)/tool/net/.lua/.zip.o						\
-o/$(MODE)/tool/net/.lua/cosmo-lfs.lua.zip.o: private			\
+o/$(MODE)/tool/net/.lua/cosmo-lfs.lua.zip.o					\
+o/$(MODE)/tool/net/.lua/cosmo-spawn.lua.zip.o: private			\
 		ZIPOBJ_FLAGS +=						\
 			-C2
 
@@ -218,6 +220,7 @@ o/$(MODE)/tool/net/redbean-demo.dbg:					\
 		o/$(MODE)/tool/net/demo/404.html.zip.o			\
 		o/$(MODE)/tool/net/demo/seekable.txt.zip.o		\
 		o/$(MODE)/tool/net/.lua/cosmo-lfs.lua.zip.o		\
+		o/$(MODE)/tool/net/.lua/cosmo-spawn.lua.zip.o		\
 		o/$(MODE)/tool/net/demo/.lua/.zip.o			\
 		o/$(MODE)/tool/net/demo/.lua/mymodule.lua.zip.o		\
 		o/$(MODE)/tool/net/demo/.reload.lua.zip.o		\

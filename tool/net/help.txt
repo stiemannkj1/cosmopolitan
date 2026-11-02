@@ -2866,6 +2866,80 @@ UNIX MODULE
     operating systems that have more security features. So depending on
     your use case, you can choose the operating system that suits you.
 
+  unix.posix_spawn(prog:str[, args:List<*>, env:List<*>, opts:table])
+  unix.posix_spawnp(prog:str[, args:List<*>, env:List<*>, opts:table])
+      ├─→ childpid:int
+      └─→ nil, unix.Errno
+
+    Starts a program without a shell and without forking the Lua
+    interpreter. The arguments in `args` reach the child exactly as given.
+    This works on Windows too, unlike fork(). posix_spawnp() searches
+    $PATH for `prog` while posix_spawn() uses it as a path. `args`
+    defaults to `{prog}`, and `env` defaults to the environment of the
+    current process.
+
+    `opts` may have the following fields.
+
+    - `actions` is a list performed in the child in order. Each entry is
+      one of `{"dup2", fd, newfd}`, `{"close", fd}`,
+      `{"open", fd, path, flags[, mode]}` or `{"chdir", path}`.
+    - `pgroup` is the process group to join, 0 for a new one.
+    - `setsid` creates a new session if true.
+    - `sigmask` is a unix.Sigset to block in the child.
+    - `sigdefault` is a unix.Sigset of signals reset to SIG_DFL.
+
+    WARNING. This is the raw interface. It trusts its arguments, so
+    `args` and `env` must be lists of strings, otherwise the behavior is
+    undefined. The caller is responsible for closing every file
+    descriptor it opened, and for wait()ing on or killing the child.
+    Create pipes with unix.O_CLOEXEC so they don't leak into the child.
+    The cosmo-spawn module below takes care of all of this.
+
+    INCOMPATIBLE WITH SANDBOXING. Spawning does not work with redbean's
+    -S, -SS and -SSS flags, or after unix.pledge() unless the promises
+    include "proc" and "exec", or after unix.unveil() unless the program
+    is unveiled with "x". The call then fails, for example with EPERM or
+    EACCES. A script that calls unix.pledge() without passing
+    unix.PLEDGE_PENALTY_RETURN_EPERM as the third argument is killed by
+    the kernel instead of getting an error. This is intended for scripting
+    and not for sandboxed servers. Pledge and unveil are not supported on
+    Windows or macOS, so nothing is enforced there.
+
+  require 'cosmo-spawn'
+
+    A safer wrapper around unix.posix_spawn() that lives in the zip store.
+
+        local spawn = require 'cosmo-spawn'
+        local p = assert(spawn.spawn({'sort', '-r'}, {search = true}))
+        p:writeStdin('a\nb\nc\n')
+        p:closeStdin()
+        print(p:readStdout())  --> c\nb\na\n
+        print(p:wait())        --> 0
+
+    spawn.spawn(argv[, opts]) returns a process object or nil and a
+    unix.Errno. Invalid arguments raise an error. argv must be a non
+    empty list of strings without NUL bytes. Options are `search`, `path`
+    (program to run if not argv[1]), `env` (list or map, empty by
+    default), `cwd`, `stdin`, `stdout` and `stderr`. The last three are
+    'pipe' by default and may also be 'null' or 'inherit', and stderr may
+    be 'stdout'.
+
+    Methods are `p.pid`, `p:writeStdin(s)`, `p:closeStdin()`,
+    `p:readStdout([n])`, `p:readStderr([n])`, `p:wait([nohang])` and
+    `p:kill([sig])`. Reads go to end of file unless `n` is given. Blocking
+    calls drain the other pipes while they wait, so they can't deadlock.
+    wait() returns the exit code, plus the signal number if the child
+    died from a signal, in which case the code is 128 plus the signal.
+
+    When a process object is garbage collected, which includes shutdown,
+    its file descriptors are closed and a running child is sent SIGKILL.
+    Neither step blocks. Shutdown cleanup runs when the Lua state is
+    closed, so it is skipped by unix.exit(), which is _Exit(), and when
+    redbean is killed by SIGKILL. Use os.exit() or kill the child
+    yourself in those cases. Loading the module also makes SIGPIPE ignored
+    if it was still the default, so writing to a dead child returns an
+    error instead of killing the process.
+
   unix.commandv(prog:str)
       ├─→ path:str
       └─→ nil, unix.Errno

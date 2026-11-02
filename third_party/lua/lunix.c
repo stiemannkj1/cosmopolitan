@@ -54,6 +54,7 @@
 #include "libc/nt/process.h"
 #include "libc/nt/runtime.h"
 #include "libc/nt/synchronization.h"
+#include "libc/proc/posix_spawn.h"
 #include "libc/runtime/clktck.h"
 #include "libc/runtime/runtime.h"
 #include "libc/runtime/sysconf.h"
@@ -609,6 +610,152 @@ static int LuaUnixExecve(lua_State *L) {
   FreeStringList(freeme1);
   FreeStringList(freeme2);
   return LuaUnixSysretErrno(L, "execve", olderr);
+}
+
+// Runs one entry of opts.actions, which looks like {"dup2", fd, newfd},
+// {"close", fd}, {"open", fd, path, flags[, mode]} or {"chdir", path}.
+// Returns 0 on success or an errno value.
+static int LuaUnixAddSpawnAction(lua_State *L, int t,
+                                 posix_spawn_file_actions_t *fa) {
+  int rc, n;
+  const char *kind;
+  lua_len(L, t);
+  n = lua_tointeger(L, -1);
+  lua_pop(L, 1);
+  if (n < 1) return EINVAL;
+  lua_geti(L, t, 1);
+  kind = lua_tostring(L, -1);
+  lua_pop(L, 1);
+  if (!kind) return EINVAL;
+  if (!strcmp(kind, "dup2") && n == 3) {
+    lua_geti(L, t, 2);
+    lua_geti(L, t, 3);
+    rc = posix_spawn_file_actions_adddup2(fa, lua_tointeger(L, -2),
+                                          lua_tointeger(L, -1));
+    lua_pop(L, 2);
+  } else if (!strcmp(kind, "close") && n == 2) {
+    lua_geti(L, t, 2);
+    rc = posix_spawn_file_actions_addclose(fa, lua_tointeger(L, -1));
+    lua_pop(L, 1);
+  } else if (!strcmp(kind, "open") && (n == 4 || n == 5)) {
+    lua_geti(L, t, 2);
+    lua_geti(L, t, 3);
+    lua_geti(L, t, 4);
+    lua_geti(L, t, 5);
+    rc = posix_spawn_file_actions_addopen(
+        fa, lua_tointeger(L, -4), lua_tostring(L, -3), lua_tointeger(L, -2),
+        n == 5 ? lua_tointeger(L, -1) : 0);
+    lua_pop(L, 4);
+  } else if (!strcmp(kind, "chdir") && n == 2) {
+    lua_geti(L, t, 2);
+    rc = posix_spawn_file_actions_addchdir_np(fa, lua_tostring(L, -1));
+    lua_pop(L, 1);
+  } else {
+    rc = EINVAL;
+  }
+  return rc;
+}
+
+static int LuaUnixSpawn(lua_State *L, const char *call,
+                        int spawn(int *, const char *,
+                                  const posix_spawn_file_actions_t *,
+                                  const posix_spawnattr_t *, char *const[],
+                                  char *const[])) {
+  int i, n, rc, pid, olderr;
+  short flags;
+  const char *prog;
+  char **argv, **envp, **freeme1, **freeme2, *ezargs[2];
+  posix_spawn_file_actions_t fa;
+  posix_spawnattr_t sa;
+  olderr = errno;
+  prog = luaL_checkstring(L, 1);
+  freeme1 = freeme2 = 0;
+  rc = 0;
+  if (!lua_isnoneornil(L, 2)) {
+    if (!(argv = freeme1 = ConvertLuaArrayToStringList(L, 2))) {
+      return LuaUnixSysretErrno(L, call, olderr);
+    }
+  } else {
+    ezargs[0] = (char *)prog;
+    ezargs[1] = 0;
+    argv = ezargs;
+  }
+  if (!lua_isnoneornil(L, 3)) {
+    if (!(envp = freeme2 = ConvertLuaArrayToStringList(L, 3))) {
+      FreeStringList(freeme1);
+      return LuaUnixSysretErrno(L, call, olderr);
+    }
+  } else {
+    envp = environ;
+  }
+  posix_spawn_file_actions_init(&fa);
+  posix_spawnattr_init(&sa);
+  flags = 0;
+  if (!lua_isnoneornil(L, 4)) {
+    luaL_checktype(L, 4, LUA_TTABLE);
+    if (lua_getfield(L, 4, "actions") != LUA_TNIL) {
+      luaL_checktype(L, -1, LUA_TTABLE);
+      lua_len(L, -1);
+      n = lua_tointeger(L, -1);
+      lua_pop(L, 1);
+      for (i = 1; i <= n && !rc; ++i) {
+        if (lua_geti(L, -1, i) == LUA_TTABLE) {
+          rc = LuaUnixAddSpawnAction(L, lua_gettop(L), &fa);
+        } else {
+          rc = EINVAL;
+        }
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, 4, "pgroup") != LUA_TNIL && !rc) {
+      flags |= POSIX_SPAWN_SETPGROUP;
+      rc = posix_spawnattr_setpgroup(&sa, luaL_checkinteger(L, -1));
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, 4, "setsid") != LUA_TNIL && lua_toboolean(L, -1)) {
+      flags |= POSIX_SPAWN_SETSID;
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, 4, "sigmask") != LUA_TNIL && !rc) {
+      flags |= POSIX_SPAWN_SETSIGMASK;
+      rc = posix_spawnattr_setsigmask(
+          &sa, luaL_checkudata(L, -1, "unix.Sigset"));
+    }
+    lua_pop(L, 1);
+    if (lua_getfield(L, 4, "sigdefault") != LUA_TNIL && !rc) {
+      flags |= POSIX_SPAWN_SETSIGDEF;
+      rc = posix_spawnattr_setsigdefault(
+          &sa, luaL_checkudata(L, -1, "unix.Sigset"));
+    }
+    lua_pop(L, 1);
+  }
+  if (!rc) rc = posix_spawnattr_setflags(&sa, flags);
+  if (!rc) rc = spawn(&pid, prog, &fa, &sa, argv, envp);
+  posix_spawnattr_destroy(&sa);
+  posix_spawn_file_actions_destroy(&fa);
+  FreeStringList(freeme1);
+  FreeStringList(freeme2);
+  if (rc) {
+    errno = rc;
+    return LuaUnixSysretErrno(L, call, olderr);
+  }
+  lua_pushinteger(L, pid);
+  return 1;
+}
+
+// unix.posix_spawn(prog:str[, args:List<*>, env:List<*>, opts:table])
+//     ├─→ childpid:int
+//     └─→ nil, unix.Errno
+static int LuaUnixPosixSpawn(lua_State *L) {
+  return LuaUnixSpawn(L, "posix_spawn", posix_spawn);
+}
+
+// unix.posix_spawnp(prog:str[, args:List<*>, env:List<*>, opts:table])
+//     ├─→ childpid:int
+//     └─→ nil, unix.Errno
+static int LuaUnixPosixSpawnp(lua_State *L) {
+  return LuaUnixSpawn(L, "posix_spawnp", posix_spawnp);
 }
 
 // unix.commandv(prog:str)
@@ -3312,6 +3459,8 @@ static const luaL_Reg kLuaUnix[] = {
     {"open", LuaUnixOpen},                // open file fd at lowest slot
     {"opendir", LuaUnixOpendir},          // read directory entry list
     {"pipe", LuaUnixPipe},                // create two anon fifo fds
+    {"posix_spawn", LuaUnixPosixSpawn},   // run program without a shell
+    {"posix_spawnp", LuaUnixPosixSpawnp}, // same but searches $PATH
     {"pledge", LuaUnixPledge},            // enables syscall sandbox
     {"poll", LuaUnixPoll},                // waits for file descriptor events
     {"raise", LuaUnixRaise},              // signal this process
