@@ -1,6 +1,7 @@
 SYNOPSIS
 
   redbean.com [-?BVabdfghjkmsuvz] [-p PORT] [-D DIR] [-- SCRIPTARGS...]
+  redbean.com [-N NAME] [-O MODULE]
 
 DESCRIPTION
 
@@ -225,6 +226,18 @@ USAGE
   case redbean reacts by truncating the log file. Lastly, redbean
   does the best job possible reporting on resource usage when the
   logger is in debug mode noting that NetBSD is the best at this.
+
+  You can print the API documentation for functions and objects without
+  starting a server. -N prints entries whose name contains NAME and -O
+  prints entries from modules whose name contains MODULE. Either may be
+  used alone and both may be combined. The match ignores case, and an
+  empty string matches everything. Each entry is preceded by its module,
+  which is `redbean` for the HTTP functions, `unix`, `cosmo-lfs` and so on.
+
+    ./redbean.com -N posix_spawn        # unix.posix_spawn and friends
+    ./redbean.com -O cosmo-lfs          # every cosmo-lfs function
+    ./redbean.com -O unix -N read       # unix entries containing "read"
+    ./redbean.com -N ''                 # everything
 
   Your redbean is an actually portable executable, that's able to
   run on six different operating systems. To do that, it needs to
@@ -757,144 +770,6 @@ FUNCTIONS
           Turns binary into ASCII. This can be used to create HTML data:
           URIs that do things like embed a PNG file in a web page. See
           encodebase64.c.
-
-  DecodeJson(input:str)
-      ├─→ int64
-      ├─→ string
-      ├─→ double
-      ├─→ array
-      ├─→ object
-      ├─→ false
-      ├─→ true
-      ├─→ nil
-      └─→ nil, error:str
-
-          Turns JSON string into a Lua data structure.
-
-          This is a generally permissive parser, in the sense that like
-          v8, it permits scalars as top-level values. Therefore we must
-          note that this API can be thought of as special, in the sense
-
-              val = assert(DecodeJson(str))
-
-          will usually do the right thing, except in cases where false
-          or null are the top-level value. In those cases, it's needed
-          to check the second value too in order to discern from error
-
-              val, err = DecodeJson(str)
-              if not val then
-                 if err then
-                    print('bad json', err)
-                 elseif val == nil then
-                    print('val is null')
-                 elseif val == false then
-                    print('val is false')
-                 end
-              end
-
-          This parser supports 64-bit signed integers. If an overflow
-          happens, then the integer is silently coerced to double, as
-          consistent with v8. If a double overflows into Infinity, we
-          coerce it to `null` since that's what v8 does, and the same
-          goes for underflows which, like v8, are coerced to 0.0.
-
-          When objects are parsed, your Lua object can't preserve the
-          the original ordering of fields. As such, they'll be sorted
-          by EncodeJson() and may not round-trip with original intent
-
-          This parser has perfect conformance with JSONTestSuite.
-
-          This parser validates utf-8 and utf-16.
-
-  EncodeJson(value[, options:table])
-      ├─→ json:str
-      ├─→ true [if useoutput]
-      └─→ nil, error:str
-
-          Turns Lua data structure into JSON string.
-
-          Since Lua tables are both hashmaps and arrays, we use a simple
-          fast algorithm for telling the two apart. Tables with non-zero
-          length (as reported by `#`) are encoded as arrays, and any
-          non-array elements are ignored. For example:
-
-              >: EncodeJson({2})
-              "[2]"
-              >: EncodeJson({[1]=2, ["hi"]=1})
-              "[2]"
-
-          If there are holes in your array, then the serialized array
-          will exclude everything after the first hole. If the beginning
-          of your array is a hole, then an error is returned.
-
-              >: EncodeJson({[1]=1, [3]=3})
-              "[1]"
-              >: EncodeJson({[2]=1, [3]=3})
-              "[]"
-              >: EncodeJson({[2]=1, [3]=3})
-              nil     "json objects must only use string keys"
-
-          If the raw length of a table is reported as zero, then we
-          check for the magic element `[0]=false`. If it's present, then
-          your table will be serialized as empty array `[]`. An entry is
-          inserted by DecodeJson() automatically, only when encountering
-          empty arrays, and it's necessary in order to make empty arrays
-          round-trip. If raw length is zero and `[0]=false` is absent,
-          then your table will be serialized as an iterated object.
-
-              >: EncodeJson({})
-              "{}"
-              >: EncodeJson({[0]=false})
-              "[]"
-              >: EncodeJson({["hi"]=1})
-              "{\"hi\":1}"
-              >: EncodeJson({["hi"]=1, [0]=false})
-              "[]"
-              >: EncodeJson({["hi"]=1, [7]=false})
-              nil     "json objects must only use string keys"
-
-          The following options may be used:
-
-            - useoutput: (bool=false) encodes the result directly to the
-              output buffer and returns `true` value. This option is
-              ignored if used outside of request handling code.
-
-            - sorted: (bool=true) Lua uses hash tables so the order of
-              object keys is lost in a Lua table. So, by default, we use
-              `strcmp` to impose a deterministic output order. If you
-              don't care about ordering then setting `sorted=false`
-              should yield a performance boost in serialization.
-
-            - pretty: (bool=false) Setting this option to `true` will
-              cause tables with more than one entry to be formatted
-              across multiple lines for readability.
-
-            - indent: (str=" ") This option controls the indentation of
-              pretty formatting. This field is ignored if `pretty` isn't
-              `true`.
-
-            - maxdepth: (int=64) This option controls the maximum amount
-              of recursion the serializer is allowed to perform. The max
-              is 32767. You might not be able to set it that high if
-              there isn't enough C stack memory. Your serializer checks
-              for this and will return an error rather than crashing.
-
-          This function will return an error if:
-
-            - `value` is cyclic
-            - `value` has depth greater than 64
-            - `value` contains functions, user data, or threads
-            - `value` is table that blends string / non-string keys
-            - Your serializer runs out of C heap memory (setrlimit)
-
-          We assume strings in `value` contain UTF-8. This serializer
-          currently does not produce UTF-8 output. The output format is
-          right now ASCII. Your UTF-8 data will be safely transcoded to
-          \uXXXX sequences which are UTF-16. Overlong encodings in your
-          input strings will be canonicalized rather than validated.
-
-          NaNs are serialized as `null` and Infinities are `null` which
-          is consistent with the v8 behavior.
 
   EncodeLua(value[, options:table])
       ├─→ luacode:str
@@ -2904,41 +2779,6 @@ UNIX MODULE
     the kernel instead of getting an error. This is intended for scripting
     and not for sandboxed servers. Pledge and unveil are not supported on
     Windows or macOS, so nothing is enforced there.
-
-  require 'cosmo-spawn'
-
-    A safer wrapper around unix.posix_spawn() that lives in the zip store.
-
-        local spawn = require 'cosmo-spawn'
-        local p = assert(spawn.spawn({'sort', '-r'}, {search = true}))
-        p:writeStdin('a\nb\nc\n')
-        p:closeStdin()
-        print(p:readStdout())  --> c\nb\na\n
-        print(p:wait())        --> 0
-
-    spawn.spawn(argv[, opts]) returns a process object or nil and a
-    unix.Errno. Invalid arguments raise an error. argv must be a non
-    empty list of strings without NUL bytes. Options are `search`, `path`
-    (program to run if not argv[1]), `env` (list or map, empty by
-    default), `cwd`, `stdin`, `stdout` and `stderr`. The last three are
-    'pipe' by default and may also be 'null' or 'inherit', and stderr may
-    be 'stdout'.
-
-    Methods are `p.pid`, `p:writeStdin(s)`, `p:closeStdin()`,
-    `p:readStdout([n])`, `p:readStderr([n])`, `p:wait([nohang])` and
-    `p:kill([sig])`. Reads go to end of file unless `n` is given. Blocking
-    calls drain the other pipes while they wait, so they can't deadlock.
-    wait() returns the exit code, plus the signal number if the child
-    died from a signal, in which case the code is 128 plus the signal.
-
-    When a process object is garbage collected, which includes shutdown,
-    its file descriptors are closed and a running child is sent SIGKILL.
-    Neither step blocks. Shutdown cleanup runs when the Lua state is
-    closed, so it is skipped by unix.exit(), which is _Exit(), and when
-    redbean is killed by SIGKILL. Use os.exit() or kill the child
-    yourself in those cases. Loading the module also makes SIGPIPE ignored
-    if it was still the default, so writing to a dead child returns an
-    error instead of killing the process.
 
   unix.commandv(prog:str)
       ├─→ path:str
@@ -6316,6 +6156,339 @@ UNIX MODULE
     operating systems define this much lower, like 32. This constant
     reflects the value chosen by the underlying operating system.
 
+
+────────────────────────────────────────────────────────────────────────────────
+COSMO-LFS MODULE
+
+  A LuaFileSystem 1.8.0 work-alike written in Lua on top of the unix
+  module, which lives in the zip store. Failures follow the upstream
+  convention of returning nil, message, errno.
+
+      local lfs = require 'cosmo-lfs'
+
+  lfs.currentdir()
+      ├─→ path:str
+      └─→ nil, message:str, errno:int
+
+    Returns the current working directory.
+
+  lfs.chdir(path:str)
+      ├─→ true
+      └─→ nil, message:str, errno:int
+
+    Changes the current working directory. This can't enter /zip.
+
+  lfs.mkdir(dirname:str)
+      ├─→ true
+      └─→ nil, message:str, errno:int
+
+    Creates a directory.
+
+  lfs.rmdir(dirname:str)
+      ├─→ true
+      └─→ nil, message:str, errno:int
+
+    Removes an empty directory.
+
+  lfs.dir(path:str)
+      ├─→ iter:func, dir:userdata
+      └─→ raises error if path can't be opened
+
+    Iterates over the entries of a directory, including . and .., e.g.
+
+        for name in lfs.dir("/tmp") do print(name) end
+
+    The second value is a directory object with `next()` and `close()`
+    methods. The directory is closed when the iteration finishes.
+
+  lfs.attributes(filepath:str[, request:str|table])
+      ├─→ value | table
+      └─→ nil, message:str, errno:int
+
+    Returns a table with the file attributes `dev`, `ino`, `mode`,
+    `nlink`, `uid`, `gid`, `rdev`, `access`, `modification`, `change`,
+    `size`, `permissions`, `blocks` and `blksize`. If `request` is the
+    name of an attribute then only its value is returned. If it's a
+    table then that table is filled in. Symbolic links are followed.
+
+  lfs.symlinkattributes(filepath:str[, request:str|table])
+      ├─→ value | table
+      └─→ nil, message:str, errno:int
+
+    Works like lfs.attributes() except symbolic links aren't followed.
+    The extra attribute `target` is the path the link points to.
+
+  lfs.link(old:str, new:str[, symbolic:bool])
+      ├─→ true
+      └─→ nil, message:str, errno:int
+
+    Creates a hard link, or a symbolic link if `symbolic` is true.
+
+  lfs.touch(filepath:str[, atime:int[, mtime:int]])
+      ├─→ true
+      └─→ nil, message:str, errno:int
+
+    Sets the access and modification times in seconds. Both default to
+    now. `mtime` defaults to `atime` if only that is passed.
+
+  lfs.lock(filehandle:file, mode:str[, start:int[, length:int]])
+      ├─→ true
+      └─→ nil, message:str
+
+    Locks a file, or a part of it, with an advisory lock. `mode` is
+    "r" for a shared lock or "w" for an exclusive one. This never
+    blocks, and fails if another process holds a conflicting lock.
+
+  lfs.unlock(filehandle:file[, start:int[, length:int]])
+      ├─→ true
+      └─→ nil, message:str
+
+    Releases a lock taken with lfs.lock().
+
+  lfs.lock_dir(path:str)
+      ├─→ lock:userdata
+      └─→ nil, message:str
+
+    Locks a directory by creating a lockfile.lfs symbolic link inside
+    it. Call `lock:free()` to release it. It's also released when the
+    object is garbage collected.
+
+  lfs.setmode(file:file, mode:str)
+      └─→ true, previous:str
+
+    Does nothing, since line endings are never translated. `mode` is
+    "binary" or "text" and the previous mode is always "binary".
+
+────────────────────────────────────────────────────────────────────────────────
+COSMO-SPAWN MODULE
+
+  require 'cosmo-spawn'
+
+    A safer wrapper around unix.posix_spawn() that lives in the zip store.
+    No shell is involved, and argv is never parsed or split.
+
+        local spawn = require 'cosmo-spawn'
+        local p = assert(spawn.spawn({'sort', '-r'}, {search = true}))
+        p:writeStdin('a\nb\nc\n')
+        p:closeStdin()
+        print(p:readStdout())  --> c\nb\na\n
+        print(p:wait())        --> 0
+
+    Loading the module also makes SIGPIPE ignored if it was still the
+    default, so writing to a dead child returns an error instead of
+    killing the process.
+
+  spawn.spawn(argv:List<str>[, opts:table])
+      ├─→ process:userdata
+      └─→ nil, unix.Errno
+
+    Starts a program. Invalid arguments raise an error. `argv` must be a
+    non empty list of strings without NUL bytes, and `argv[1]` is the
+    program. `opts` may have the following fields.
+
+    - `search` looks `argv[1]` up in $PATH if true. Default is false.
+    - `path` is the program to run if it isn't `argv[1]`.
+    - `env` is a list of "K=V" strings or a map. Default is empty.
+    - `cwd` is the working directory of the child.
+    - `stdin`, `stdout` and `stderr` are 'pipe' by default and may also
+      be 'null' or 'inherit'. `stderr` may also be 'stdout'.
+
+    When the returned object is garbage collected, which includes
+    shutdown, its file descriptors are closed and a running child is
+    sent SIGKILL. Neither step blocks. Shutdown cleanup runs when the Lua
+    state is closed, so it is skipped by unix.exit(), which is _Exit(),
+    and when redbean is killed by SIGKILL. Use os.exit() or kill the
+    child yourself in those cases.
+
+  p.pid
+      └─→ pid:int
+
+    The process id of the child.
+
+  p:writeStdin(data:str)
+      ├─→ true
+      └─→ nil, unix.Errno
+
+    Writes all of `data` to the child's standard input. Other pipes are
+    drained while this waits, so it can't deadlock.
+
+  p:closeStdin()
+      └─→ true
+
+    Closes the child's standard input so it sees end of file. Programs
+    like sort and cat don't finish until this is called.
+
+  p:readStdout([n:int])
+  p:readStderr([n:int])
+      ├─→ data:str
+      └─→ nil, message:str
+
+    Reads standard output or standard error. Without `n` this reads to
+    end of file and returns everything. With a positive `n` it blocks
+    until some data is available and returns at most `n` bytes, or an
+    empty string at end of file. Any other `n` raises an error. Fails if
+    that stream wasn't a pipe.
+
+  p:wait([nohang:bool])
+      ├─→ exitcode:int[, signal:int]
+      ├─→ false
+      └─→ nil, unix.Errno
+
+    Waits for the child and returns its exit code. If it died from a
+    signal then the code is 128 plus the signal, and the signal is
+    returned second. If `nohang` is true then false is returned while
+    the child is still running.
+
+  p:kill([sig:int])
+      ├─→ true
+      ├─→ false
+      └─→ nil, unix.Errno
+
+    Sends a signal, SIGTERM by default. Returns false if the child was
+    already reaped.
+
+────────────────────────────────────────────────────────────────────────────────
+JSON MODULE
+
+  These functions are globals in redbean, so they need no require.
+
+  DecodeJson(input:str)
+      ├─→ int64
+      ├─→ string
+      ├─→ double
+      ├─→ array
+      ├─→ object
+      ├─→ false
+      ├─→ true
+      ├─→ nil
+      └─→ nil, error:str
+
+          Turns JSON string into a Lua data structure.
+
+          This is a generally permissive parser, in the sense that like
+          v8, it permits scalars as top-level values. Therefore we must
+          note that this API can be thought of as special, in the sense
+
+              val = assert(DecodeJson(str))
+
+          will usually do the right thing, except in cases where false
+          or null are the top-level value. In those cases, it's needed
+          to check the second value too in order to discern from error
+
+              val, err = DecodeJson(str)
+              if not val then
+                 if err then
+                    print('bad json', err)
+                 elseif val == nil then
+                    print('val is null')
+                 elseif val == false then
+                    print('val is false')
+                 end
+              end
+
+          This parser supports 64-bit signed integers. If an overflow
+          happens, then the integer is silently coerced to double, as
+          consistent with v8. If a double overflows into Infinity, we
+          coerce it to `null` since that's what v8 does, and the same
+          goes for underflows which, like v8, are coerced to 0.0.
+
+          When objects are parsed, your Lua object can't preserve the
+          the original ordering of fields. As such, they'll be sorted
+          by EncodeJson() and may not round-trip with original intent
+
+          This parser has perfect conformance with JSONTestSuite.
+
+          This parser validates utf-8 and utf-16.
+
+  EncodeJson(value[, options:table])
+      ├─→ json:str
+      ├─→ true [if useoutput]
+      └─→ nil, error:str
+
+          Turns Lua data structure into JSON string.
+
+          Since Lua tables are both hashmaps and arrays, we use a simple
+          fast algorithm for telling the two apart. Tables with non-zero
+          length (as reported by `#`) are encoded as arrays, and any
+          non-array elements are ignored. For example:
+
+              >: EncodeJson({2})
+              "[2]"
+              >: EncodeJson({[1]=2, ["hi"]=1})
+              "[2]"
+
+          If there are holes in your array, then the serialized array
+          will exclude everything after the first hole. If the beginning
+          of your array is a hole, then an error is returned.
+
+              >: EncodeJson({[1]=1, [3]=3})
+              "[1]"
+              >: EncodeJson({[2]=1, [3]=3})
+              "[]"
+              >: EncodeJson({[2]=1, [3]=3})
+              nil     "json objects must only use string keys"
+
+          If the raw length of a table is reported as zero, then we
+          check for the magic element `[0]=false`. If it's present, then
+          your table will be serialized as empty array `[]`. An entry is
+          inserted by DecodeJson() automatically, only when encountering
+          empty arrays, and it's necessary in order to make empty arrays
+          round-trip. If raw length is zero and `[0]=false` is absent,
+          then your table will be serialized as an iterated object.
+
+              >: EncodeJson({})
+              "{}"
+              >: EncodeJson({[0]=false})
+              "[]"
+              >: EncodeJson({["hi"]=1})
+              "{\"hi\":1}"
+              >: EncodeJson({["hi"]=1, [0]=false})
+              "[]"
+              >: EncodeJson({["hi"]=1, [7]=false})
+              nil     "json objects must only use string keys"
+
+          The following options may be used:
+
+            - useoutput: (bool=false) encodes the result directly to the
+              output buffer and returns `true` value. This option is
+              ignored if used outside of request handling code.
+
+            - sorted: (bool=true) Lua uses hash tables so the order of
+              object keys is lost in a Lua table. So, by default, we use
+              `strcmp` to impose a deterministic output order. If you
+              don't care about ordering then setting `sorted=false`
+              should yield a performance boost in serialization.
+
+            - pretty: (bool=false) Setting this option to `true` will
+              cause tables with more than one entry to be formatted
+              across multiple lines for readability.
+
+            - indent: (str=" ") This option controls the indentation of
+              pretty formatting. This field is ignored if `pretty` isn't
+              `true`.
+
+            - maxdepth: (int=64) This option controls the maximum amount
+              of recursion the serializer is allowed to perform. The max
+              is 32767. You might not be able to set it that high if
+              there isn't enough C stack memory. Your serializer checks
+              for this and will return an error rather than crashing.
+
+          This function will return an error if:
+
+            - `value` is cyclic
+            - `value` has depth greater than 64
+            - `value` contains functions, user data, or threads
+            - `value` is table that blends string / non-string keys
+            - Your serializer runs out of C heap memory (setrlimit)
+
+          We assume strings in `value` contain UTF-8. This serializer
+          currently does not produce UTF-8 output. The output format is
+          right now ASCII. Your UTF-8 data will be safely transcoded to
+          \uXXXX sequences which are UTF-16. Overlong encodings in your
+          input strings will be canonicalized rather than validated.
+
+          NaNs are serialized as `null` and Infinities are `null` which
+          is consistent with the v8 behavior.
 
 ────────────────────────────────────────────────────────────────────────────────
 LEGAL

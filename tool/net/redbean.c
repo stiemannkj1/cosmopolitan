@@ -208,11 +208,11 @@ __static_yoink("blink_xnu_aarch64");    // is apple silicon
     }                       \
   } while (0)
 
-// letters not used: INOQYnoqwxy
+// letters not used: IQYnoqxy
 // digits not used:  0123456789
 // puncts not used:  !"#$&'()+,-./;<=>@[\]^_`{|}~
 #define GETOPTS \
-  "*%BEJSVXZabdfghijkmsuvzA:C:D:F:G:H:K:L:M:P:R:T:U:W:c:e:l:p:r:t:w:"
+  "*%BEJSVXZabdfghijkmsuvzA:C:D:F:G:H:K:L:M:N:O:P:R:T:U:W:c:e:l:p:r:t:w:"
 
 static const uint8_t kGzipHeader[] = {
     0x1F,        // MAGNUM
@@ -2474,6 +2474,111 @@ static wontreturn void PrintUsage(int fd, int rc) {
     __paginate(fd, p);
   }
   exit(rc);
+}
+
+// Prints the entries of help.txt whose name contains `name` and whose
+// module contains `module`. An empty or null filter matches everything.
+// Modules are derived from the section headings between FUNCTIONS and
+// LEGAL, so the docs live in one place and this never goes stale.
+static bool DocMatch(const char *haystack, const char *needle) {
+  return !needle || !*needle || strcasestr(haystack, needle);
+}
+
+static wontreturn void PrintApiDocs(const char *name, const char *module) {
+  size_t n;
+  char *p;
+  struct Asset *a;
+  if (!(a = GetAssetZip("/help.txt", 9)) || !(p = LoadAsset(a, &n))) {
+    fprintf(stderr, "error: /help.txt is not a zip asset\n");
+    exit(1);
+  }
+  int found = 0;
+  bool active = false, afterrule = false, body = false, match = false;
+  bool have = false;
+  char mod[64] = "";
+  char entmod[64] = "";
+  const char *start = 0, *end = 0, *line = p;
+  while (*line) {
+    const char *eol = strchr(line, '\n');
+    size_t len = eol ? eol - line : strlen(line);
+    bool rule = len >= 3 && !memcmp(line, "\xe2\x94\x80", 3);
+    bool flush = rule;
+    bool sig = false;
+    char tok[256] = "";
+    if (afterrule) {
+      // the heading, e.g. " UNIX DIR OBJECT" or "COSMO-LFS MODULE"
+      size_t i = 0, j = 0;
+      while (i < len && line[i] == ' ') ++i;
+      while (i + j < len && line[i + j] != ' ' && j < sizeof(mod) - 1) {
+        mod[j] = tolower(line[i + j]);
+        ++j;
+      }
+      mod[j] = 0;
+      if (!strcmp(mod, "functions") || !strcmp(mod, "constants")) {
+        strcpy(mod, "redbean");
+      }
+      if (!strcmp(mod, "legal")) active = false;
+      if (!strcmp(mod, "redbean") && !active) active = true;
+      afterrule = false;
+    } else if (!rule && active && len > 2 && line[0] == ' ' && line[1] == ' ' &&
+               (isalpha(line[2]) || line[2] == '_')) {
+      size_t i = 2, j = 0;
+      while (i < len && (isalnum(line[i]) || line[i] == '_' ||
+                         line[i] == '.' || line[i] == ':')) {
+        if (j < sizeof(tok) - 1) tok[j++] = line[i];
+        ++i;
+      }
+      tok[j] = 0;
+      if (i == len || line[i] == '(') {
+        sig = true;
+      } else if (!memcmp(line + 2, "require '", 9)) {
+        sig = true;
+        j = len - 2 < sizeof(tok) - 1 ? len - 2 : sizeof(tok) - 1;
+        memcpy(tok, line + 2, j);
+        tok[j] = 0;
+      }
+    }
+    if (sig) {
+      if (have && !body) {  // another signature of the same entry
+        match |= DocMatch(tok, name);
+        end = eol ? eol + 1 : line + len;
+      } else {
+        flush = true;
+      }
+    }
+    if (flush && have) {
+      if (match && DocMatch(entmod, module)) {
+        printf("[%s]\n%.*s\n", entmod, (int)(end - start), start);
+        ++found;
+      }
+      have = false;
+    }
+    if (rule) afterrule = true;
+    if (sig && !have) {
+      have = true, body = false, start = line;
+      match = DocMatch(tok, name);
+      memcpy(entmod, mod, sizeof(mod));
+      end = eol ? eol + 1 : line + len;
+    } else if (have && !rule && !afterrule) {
+      if (len && !sig) {
+        body = true;
+        end = eol ? eol + 1 : line + len;
+      }
+    }
+    if (!eol) break;
+    line = eol + 1;
+  }
+  if (have && match && DocMatch(entmod, module)) {
+    printf("[%s]\n%.*s\n", entmod, (int)(end - start), start);
+    ++found;
+  }
+  fflush(stdout);
+  if (!found) {
+    fprintf(stderr, "error: no api docs match name=\"%s\" module=\"%s\"\n",
+            name ? name : "", module ? module : "");
+    exit(1);
+  }
+  exit(0);
 }
 
 static void AppendLogo(void) {
@@ -7266,6 +7371,8 @@ static void GetOpts(int argc, char *argv[]) {
   int opt;
   bool got_e_arg = false;
   bool storeasset = false;
+  bool wantdocs = false;
+  const char *docname = 0, *docmodule = 0;
   // only generate ecp cert under blinkenlights (rsa is slow)
   norsagen = IsGenuineBlink();
   while ((opt = getopt(argc, argv, GETOPTS)) != -1) {
@@ -7302,6 +7409,14 @@ static void GetOpts(int argc, char *argv[]) {
         CASE('r', ProgramRedirectArg(307, optarg));
         CASE('t', ProgramTimeout(ParseInt(optarg)));
         CASE('h', PrintUsage(1, EXIT_SUCCESS));
+      case 'N':
+        wantdocs = true;
+        docname = optarg;
+        break;
+      case 'O':
+        wantdocs = true;
+        docmodule = optarg;
+        break;
         CASE('M', ProgramMaxPayloadSize(ParseInt(optarg)));
 #if !IsTiny()
       case 'f':
@@ -7341,6 +7456,7 @@ static void GetOpts(int argc, char *argv[]) {
         PrintUsage(2, EX_USAGE);
     }
   }
+  if (wantdocs) PrintApiDocs(docname, docmodule);
   // if storing asset(s) is requested, don't need to continue
   if (storeasset)
     exit(0);
