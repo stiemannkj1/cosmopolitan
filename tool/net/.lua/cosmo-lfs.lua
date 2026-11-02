@@ -76,18 +76,41 @@ end
 -- tail call has lost its call site, and with it the name and the knowledge
 -- of whether it was a method, where a C function would still have both, so
 -- the caller supplies the name as a fallback.
-local function argerror(arg, extramsg, fallbackname)
-   local info = getinfo and getinfo(2, 'n')
-   local name = (info and info.name) or fallbackname or '?'
+--
+-- when the call site has no name of its own, luaL_argerror falls back to
+-- pushglobalfuncname(), which hunts the function down in package.loaded
+-- and reports it qualified.  that is why pcall(lfs.touch, ...) names the
+-- module while a direct lfs.touch(...) names only the field.
+local function globalfuncname(f)
+   for modname, mod in pairs(package.loaded) do
+      if type(mod) == 'table' then
+         for k, v in pairs(mod) do
+            if v == f and type(k) == 'string' then
+               return modname == '_G' and k or modname .. '.' .. k
+            end
+         end
+      end
+   end
+end
+
+-- `depth` counts frames from this function's caller up to the one being
+-- blamed, so 1 means the caller itself and 2 means its caller.  this is
+-- the only place an argument error is formatted.
+local function argerror(arg, extramsg, depth, fallbackname)
+   depth = depth or 1
+   local info = getinfo and getinfo(depth + 1, 'nf')
+   local name = (info and info.name)
+      or (info and info.func and globalfuncname(info.func))
+      or fallbackname or '?'
    if info and info.namewhat == 'method' then
       arg = arg - 1
       if arg == 0 then
          error(string.format("calling '%s' on bad self (%s)", name, extramsg),
-               3)
+               depth + 2)
       end
    end
    error(string.format("bad argument #%d to '%s' (%s)", arg, name, extramsg),
-         3)
+         depth + 2)
 end
 
 --------------------------------------------------------------- directories
@@ -133,11 +156,18 @@ local newobject, stateof
 
 do
    local mint = unix.Sigset
-   local ok = mint and setmeta and setuv and getuv and pcall(function()
-      local probe = mint()
-      setuv(probe, {})
-      return getuv(probe) ~= nil
-   end)
+   -- pcall() returns two values, so this has to be unpacked rather than
+   -- folded into the `and` chain, which would truncate it to the status
+   -- and throw the probe's answer away
+   local ok = false
+   if mint and setmeta and setuv and getuv then
+      local called, works = pcall(function()
+         local probe = mint()
+         setuv(probe, {})
+         return getuv(probe) ~= nil
+      end)
+      ok = called and works
+   end
 
    if ok then
       newobject = function(meta, state)
@@ -168,7 +198,7 @@ Dir.__name = 'directory metatable'
 function Dir:next()
    local d = stateof(self)
    if d.closed then
-      argerror(1, 'closed directory', 'next')
+      argerror(1, 'closed directory', 1, 'next')
    end
    local name = d.handle:read()
    if name == nil then
@@ -259,10 +289,15 @@ local function fileinfo(filepath, aname, flags)
          "cannot obtain information from file '%s': %s", filepath, strerror(err)),
          err:errno()
    end
-   if type(aname) == 'string' then
-      local get = MEMBERS[aname]
+   -- upstream tests this with lua_isstring(), which accepts a number and
+   -- converts it, so lfs.attributes(p, 42) reports an invalid attribute
+   -- name rather than quietly handing back the whole table
+   local key = (type(aname) == 'string' or type(aname) == 'number')
+      and tostring(aname)
+   if key then
+      local get = MEMBERS[key]
       if not get then
-         error(string.format("invalid attribute name '%s'", aname), 3)
+         error(string.format("invalid attribute name '%s'", key), 3)
       end
       return get(st)
    end
@@ -271,8 +306,13 @@ local function fileinfo(filepath, aname, flags)
    return t
 end
 
+-- deliberately not a tail call.  fileinfo() raises at level 3 so that the
+-- caller of lfs.attributes() is blamed, and a tail call would drop this
+-- frame and blame the caller's caller instead
 function lfs.attributes(filepath, aname)
-   return fileinfo(filepath, aname)
+   local info, msg, errno = fileinfo(filepath, aname)
+   if info == nil then return nil, msg, errno end
+   return info
 end
 
 function lfs.symlinkattributes(filepath, aname)
@@ -305,56 +345,88 @@ end
 -- unix.utimensat takes a (seconds, nanoseconds) pair per timestamp and
 -- defaults the nanoseconds to UTIME_NOW, so an explicit zero is required
 -- whenever a time is actually being set
+--
+-- upstream reads the times with luaL_optnumber(), so nil means the default
+-- while anything that will not convert to a number is an argument error.
+-- silently treating it as zero would move the file's timestamps to 1970.
+local function opttime(v, argn, default)
+   if v == nil then return default end
+   local n = tonumber(v)
+   if not n then
+      argerror(argn, 'number expected, got ' .. type(v), 2, 'touch')
+   end
+   return math.floor(n)
+end
+
 function lfs.touch(filepath, ...)
    if select('#', ...) == 0 then
       return pushresult(unix.utimensat(filepath))
    end
-   local atime = math.floor(tonumber((select(1, ...))) or 0)
-   local given = select(2, ...)
-   local mtime = given ~= nil and math.floor(tonumber(given) or 0) or atime
+   local atime = opttime((select(1, ...)), 2, 0)
+   local mtime = atime
+   if select('#', ...) > 1 then
+      mtime = opttime((select(2, ...)), 3, atime)
+   end
    return pushresult(unix.utimensat(filepath, atime, 0, mtime, 0))
 end
 
 ------------------------------------------------------------------- locking
 
-local function tofd(f, funcname)
-   if math.type(f) == 'integer' then return f end
-   if io.type(f) == 'file' then
-      if not unix.fileno then
-         error(funcname .. ': this redbean predates unix.fileno, so a stdio' ..
-               ' handle cannot be locked, pass a descriptor instead', 3)
-      end
-      local fd, err = unix.fileno(f)
-      if not fd then
-         error(string.format('%s: %s', funcname, strerror(err)), 3)
-      end
-      return fd
+-- upstream's check_file(): the handle must be a FILE*, and a closed one
+-- is reported on its own rather than as an argument error.  `depth` counts
+-- frames from here up to the function being blamed, which makes the raise
+-- level depth + 2 and the argerror depth depth + 1.
+local function checkfile(f, funcname, supplied, depth)
+   if io.type(f) == 'file' then return f end
+   if io.type(f) == 'closed file' then
+      error(string.format('%s: closed file', funcname), depth + 2)
    end
-   error(string.format('%s: not a file', funcname), 3)
+   argerror(1, 'FILE* expected, got ' ..
+            (supplied and type(f) or 'no value'), depth + 1, funcname)
+end
+
+local function tofd(f, funcname, supplied, depth)
+   if math.type(f) == 'integer' then return f end
+   checkfile(f, funcname, supplied, depth + 1)
+   if not unix.fileno then
+      error(funcname .. ': this redbean predates unix.fileno, so a stdio' ..
+            ' handle cannot be locked, pass a descriptor instead', depth + 2)
+   end
+   local fd, err = unix.fileno(f)
+   if not fd then
+      error(string.format('%s: %s', funcname, strerror(err)), depth + 2)
+   end
+   return fd
 end
 
 local LOCKTYPE = {
    r = unix.F_RDLCK, w = unix.F_WRLCK, u = unix.F_UNLCK,
 }
 
-local function filelock(f, mode, start, len, funcname)
+-- upstream validates the handle before the mode, so a bad first argument
+-- is reported as such rather than as an invalid mode
+local function filelock(supplied, f, mode, start, len, funcname)
+   local fd = tofd(f, funcname, supplied, 2)
    local ltype = type(mode) == 'string' and LOCKTYPE[mode:sub(1, 1)]
    if not ltype then
       error(string.format('%s: invalid mode', funcname), 3)
    end
-   local fd = tofd(f, funcname)
    return unix.fcntl(fd, unix.F_SETLK, ltype, start or 0, len or 0,
                      unix.SEEK_SET)
 end
 
-function lfs.lock(f, mode, start, len)
-   local ok, err = filelock(f, mode, start, len, 'lock')
+-- declared vararg so that an omitted handle can be told apart from an
+-- explicit nil, which is upstream's "no value" versus "nil"
+function lfs.lock(...)
+   local f, mode, start, len = ...
+   local ok, err = filelock(select('#', ...) > 0, f, mode, start, len, 'lock')
    if not ok then return nil, strerror(err) end
    return true
 end
 
-function lfs.unlock(f, start, len)
-   local ok, err = filelock(f, 'u', start, len, 'unlock')
+function lfs.unlock(...)
+   local f, start, len = ...
+   local ok, err = filelock(select('#', ...) > 0, f, 'u', start, len, 'unlock')
    if not ok then return nil, strerror(err) end
    return true
 end
@@ -387,14 +459,16 @@ end
 
 -- cosmopolitan stdio never translates line endings on any platform, which
 -- makes this the same no-op upstream compiles on every non-Windows build
-function lfs.setmode(f, mode)
-   if io.type(f) ~= 'file' and math.type(f) ~= 'integer' then
-      error("setmode: not a file", 2)
+function lfs.setmode(...)
+   local f, mode = ...
+   if math.type(f) ~= 'integer' then
+      checkfile(f, 'setmode', select('#', ...) > 0, 1)
    end
+   -- upstream raises this through luaL_checkoption, which is an ordinary
+   -- argument error rather than a message of its own
    if mode ~= 'binary' and mode ~= 'text' then
-      error(string.format(
-         "bad argument #2 to 'lfs.setmode' (invalid option '%s')",
-         tostring(mode)), 2)
+      argerror(2, string.format("invalid option '%s'", tostring(mode)), 1,
+               'setmode')
    end
    return true, 'binary'
 end
