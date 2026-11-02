@@ -304,25 +304,31 @@ static void FreeStringList(char **p) {
 static char **ConvertLuaArrayToStringList(lua_State *L, int i) {
   int j, n;
   char **p, *s;
+  const char *t;
   luaL_checktype(L, i, LUA_TTABLE);
   lua_len(L, i);
   n = lua_tointeger(L, -1);
   lua_pop(L, 1);
-  if ((p = LuaAlloc(L, (n + 1) * sizeof(*p)))) {
-    for (j = 1; j <= n; ++j) {
-      lua_geti(L, i, j);
-      s = strdup(lua_tostring(L, -1));
-      lua_pop(L, 1);
-      if (s) {
-        p[j - 1] = s;
-      } else {
-        FreeStringList(p);
-        p = 0;
-        break;
-      }
+  if (!(p = LuaAlloc(L, (n + 1) * sizeof(*p)))) return 0;
+  for (j = 1; j <= n; ++j) {
+    lua_geti(L, i, j);
+    // lua_tostring() yields NULL for anything that is neither a string nor
+    // a number, and strdup() would then read from address zero
+    t = lua_tostring(L, -1);
+    s = t ? strdup(t) : 0;
+    lua_pop(L, 1);
+    if (!s) {
+      // the list has to be terminated before it can be freed, because
+      // LuaAlloc() does not zero and the slots past this one still hold
+      // whatever the allocator handed back
+      p[j - 1] = 0;
+      FreeStringList(p);
+      if (!t) errno = EINVAL;
+      return 0;
     }
-    p[j - 1] = 0;
+    p[j - 1] = s;
   }
+  p[n] = 0;
   return p;
 }
 
@@ -618,15 +624,18 @@ static int LuaUnixExecve(lua_State *L) {
 static int LuaUnixAddSpawnAction(lua_State *L, int t,
                                  posix_spawn_file_actions_t *fa) {
   int rc, n;
-  const char *kind;
+  const char *kind, *path;
   lua_len(L, t);
   n = lua_tointeger(L, -1);
   lua_pop(L, 1);
   if (n < 1) return EINVAL;
+  // keep the kind string on the stack while it's used, since popping it
+  // can leave the only reference to a converted number unanchored
   lua_geti(L, t, 1);
-  kind = lua_tostring(L, -1);
-  lua_pop(L, 1);
-  if (!kind) return EINVAL;
+  if (!(kind = lua_tostring(L, -1))) {
+    lua_pop(L, 1);
+    return EINVAL;
+  }
   if (!strcmp(kind, "dup2") && n == 3) {
     lua_geti(L, t, 2);
     lua_geti(L, t, 3);
@@ -642,17 +651,27 @@ static int LuaUnixAddSpawnAction(lua_State *L, int t,
     lua_geti(L, t, 3);
     lua_geti(L, t, 4);
     lua_geti(L, t, 5);
-    rc = posix_spawn_file_actions_addopen(
-        fa, lua_tointeger(L, -4), lua_tostring(L, -3), lua_tointeger(L, -2),
-        n == 5 ? lua_tointeger(L, -1) : 0);
+    // a non-string path would be strdup(NULL) inside the libc call
+    if ((path = lua_tostring(L, -3))) {
+      rc = posix_spawn_file_actions_addopen(fa, lua_tointeger(L, -4), path,
+                                            lua_tointeger(L, -2),
+                                            n == 5 ? lua_tointeger(L, -1) : 0);
+    } else {
+      rc = EINVAL;
+    }
     lua_pop(L, 4);
   } else if (!strcmp(kind, "chdir") && n == 2) {
     lua_geti(L, t, 2);
-    rc = posix_spawn_file_actions_addchdir_np(fa, lua_tostring(L, -1));
+    if ((path = lua_tostring(L, -1))) {
+      rc = posix_spawn_file_actions_addchdir_np(fa, path);
+    } else {
+      rc = EINVAL;
+    }
     lua_pop(L, 1);
   } else {
     rc = EINVAL;
   }
+  lua_pop(L, 1);  // kind
   return rc;
 }
 
@@ -663,12 +682,18 @@ static int LuaUnixSpawn(lua_State *L, const char *call,
                                   char *const[])) {
   int i, n, rc, pid, olderr;
   short flags;
+  sigset_t *set;
   const char *prog;
   char **argv, **envp, **freeme1, **freeme2, *ezargs[2];
   posix_spawn_file_actions_t fa;
   posix_spawnattr_t sa;
   olderr = errno;
   prog = luaL_checkstring(L, 1);
+  // check the table arguments before anything is allocated, since a
+  // luaL_ error longjmps out of this function without running cleanup
+  if (!lua_isnoneornil(L, 2)) luaL_checktype(L, 2, LUA_TTABLE);
+  if (!lua_isnoneornil(L, 3)) luaL_checktype(L, 3, LUA_TTABLE);
+  if (!lua_isnoneornil(L, 4)) luaL_checktype(L, 4, LUA_TTABLE);
   freeme1 = freeme2 = 0;
   rc = 0;
   if (!lua_isnoneornil(L, 2)) {
@@ -692,25 +717,31 @@ static int LuaUnixSpawn(lua_State *L, const char *call,
   posix_spawnattr_init(&sa);
   flags = 0;
   if (!lua_isnoneornil(L, 4)) {
-    luaL_checktype(L, 4, LUA_TTABLE);
     if (lua_getfield(L, 4, "actions") != LUA_TNIL) {
-      luaL_checktype(L, -1, LUA_TTABLE);
-      lua_len(L, -1);
-      n = lua_tointeger(L, -1);
-      lua_pop(L, 1);
-      for (i = 1; i <= n && !rc; ++i) {
-        if (lua_geti(L, -1, i) == LUA_TTABLE) {
-          rc = LuaUnixAddSpawnAction(L, lua_gettop(L), &fa);
-        } else {
-          rc = EINVAL;
-        }
+      if (lua_istable(L, -1)) {
+        lua_len(L, -1);
+        n = lua_tointeger(L, -1);
         lua_pop(L, 1);
+        for (i = 1; i <= n && !rc; ++i) {
+          if (lua_geti(L, -1, i) == LUA_TTABLE) {
+            rc = LuaUnixAddSpawnAction(L, lua_gettop(L), &fa);
+          } else {
+            rc = EINVAL;
+          }
+          lua_pop(L, 1);
+        }
+      } else {
+        rc = EINVAL;
       }
     }
     lua_pop(L, 1);
     if (lua_getfield(L, 4, "pgroup") != LUA_TNIL && !rc) {
       flags |= POSIX_SPAWN_SETPGROUP;
-      rc = posix_spawnattr_setpgroup(&sa, luaL_checkinteger(L, -1));
+      if (lua_isinteger(L, -1)) {
+        rc = posix_spawnattr_setpgroup(&sa, lua_tointeger(L, -1));
+      } else {
+        rc = EINVAL;
+      }
     }
     lua_pop(L, 1);
     if (lua_getfield(L, 4, "setsid") != LUA_TNIL && lua_toboolean(L, -1)) {
@@ -719,14 +750,20 @@ static int LuaUnixSpawn(lua_State *L, const char *call,
     lua_pop(L, 1);
     if (lua_getfield(L, 4, "sigmask") != LUA_TNIL && !rc) {
       flags |= POSIX_SPAWN_SETSIGMASK;
-      rc = posix_spawnattr_setsigmask(
-          &sa, luaL_checkudata(L, -1, "unix.Sigset"));
+      if ((set = luaL_testudata(L, -1, "unix.Sigset"))) {
+        rc = posix_spawnattr_setsigmask(&sa, set);
+      } else {
+        rc = EINVAL;
+      }
     }
     lua_pop(L, 1);
     if (lua_getfield(L, 4, "sigdefault") != LUA_TNIL && !rc) {
       flags |= POSIX_SPAWN_SETSIGDEF;
-      rc = posix_spawnattr_setsigdefault(
-          &sa, luaL_checkudata(L, -1, "unix.Sigset"));
+      if ((set = luaL_testudata(L, -1, "unix.Sigset"))) {
+        rc = posix_spawnattr_setsigdefault(&sa, set);
+      } else {
+        rc = EINVAL;
+      }
     }
     lua_pop(L, 1);
   }

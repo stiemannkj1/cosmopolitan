@@ -6276,7 +6276,16 @@ COSMO-SPAWN MODULE
 
     Loading the module also makes SIGPIPE ignored if it was still the
     default, so writing to a dead child returns an error instead of
-    killing the process.
+    killing the process. Children get the default SIGPIPE back, since
+    posix_spawn() otherwise passes an ignored signal on to them.
+
+    This is meant for scripts, which is redbean -i. A redbean server
+    reaps every child it has with wait4(-1), so a process object kept
+    across a return to the event loop has its child stolen: p:wait()
+    then fails with ECHILD, and the pid may already be reused when
+    p:kill() or garbage collection signals it. Inside a server, spawn
+    and wait in the same handler call and drop the object before
+    returning.
 
   spawn.spawn(argv:List<str>[, opts:table])
       ├─→ process:userdata
@@ -6307,10 +6316,13 @@ COSMO-SPAWN MODULE
 
   p:writeStdin(data:str)
       ├─→ true
-      └─→ nil, unix.Errno
+      ├─→ nil, unix.Errno
+      └─→ nil, message:str
 
     Writes all of `data` to the child's standard input. Other pipes are
-    drained while this waits, so it can't deadlock.
+    drained while this waits, so it can't deadlock. The second value is
+    a message string rather than an Errno when standard input wasn't a
+    pipe, was already closed, or the child closed its end.
 
   p:closeStdin()
       └─→ true

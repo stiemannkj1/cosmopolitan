@@ -31,6 +31,13 @@
      EPERM or EACCES error.  Pledge a script without passing
      unix.PLEDGE_PENALTY_RETURN_EPERM and the kernel kills it instead.
 
+     Meant for scripts, which is redbean -i.  A running redbean server
+     reaps every child it has with wait4(-1), so a handle kept across a
+     return to its event loop has its child stolen, p:wait() then fails
+     with ECHILD and the pid may be reused by the time p:kill() or
+     collection sends a signal.  Inside a server, spawn and wait within
+     the same handler call and drop the handle before returning.
+
      Process object, all methods are called with a colon.
 
      p.pid                the child's process id
@@ -40,6 +47,10 @@
      p:readStderr([n])    same, for standard error
      p:wait([nohang])     exit status, false if nohang and still running
      p:kill([sig])        sends sig, default SIGTERM
+
+     The second value of a failed method is a unix.Errno when the system
+     call failed and a plain message string when the stream was never a
+     pipe or is already closed, so test it before calling :errno() on it.
 
      Every blocking call also drains the other pipes into memory while it
      waits, so a child that fills one pipe while the parent waits on
@@ -77,6 +88,15 @@ do
    if old == unix.SIG_DFL then unix.sigaction(unix.SIGPIPE, unix.SIG_IGN) end
 end
 
+-- posix_spawn keeps an ignored signal ignored in the child unless the
+-- signal is named in sigdefault.  Our own SIGPIPE above, and redbean's,
+-- would otherwise be inherited by every child, so a program that expects
+-- to die on a broken pipe would see write errors instead.
+local SIGPIPE_DEFAULT = unix.Sigset(unix.SIGPIPE)
+
+local OPTIONS = {search = true, path = true, env = true, cwd = true,
+                 stdin = true, stdout = true, stderr = true}
+
 local spawn = {}
 
 local Process = {}
@@ -92,47 +112,66 @@ local function sweep()
    end
 end
 
-local function fail(msg)
-   error('cosmo-spawn: ' .. msg, 3)
+-- `depth` counts frames from fail's caller up to the public function the
+-- caller should be blamed for, so 1 is spawn.spawn raising directly, 2 a
+-- validator it calls and 3 a validator nested inside another one.  without
+-- this every message points at a line inside this module instead of the
+-- line that called it.
+local function fail(msg, depth)
+   error('cosmo-spawn: ' .. msg, (depth or 1) + 2)
 end
 
-local function checkstring(s, what)
-   if type(s) ~= 'string' then fail(what .. ' must be a string') end
-   if s:find('\0', 1, true) then fail(what .. ' must not contain NUL') end
+local function checkstring(s, what, depth)
+   depth = depth or 2
+   if type(s) ~= 'string' then fail(what .. ' must be a string', depth) end
+   if s:find('\0', 1, true) then
+      fail(what .. ' must not contain NUL', depth)
+   end
    return s
 end
 
 local function checkargv(argv)
-   if type(argv) ~= 'table' then fail('argv must be a table') end
+   if type(argv) ~= 'table' then fail('argv must be a table', 2) end
    local n = #argv
-   if n == 0 then fail('argv must not be empty') end
+   if n == 0 then fail('argv must not be empty', 2) end
    local count = 0
    for k, v in pairs(argv) do
       count = count + 1
       if math.type(k) ~= 'integer' or k < 1 or k > n then
-         fail('argv must be a plain list of strings')
+         fail('argv must be a plain list of strings', 2)
       end
-      checkstring(v, 'argv[' .. k .. ']')
+      checkstring(v, 'argv[' .. k .. ']', 3)
    end
-   if count ~= n then fail('argv must be a plain list of strings') end
-   if argv[1] == '' then fail('argv[1] must not be empty') end
+   if count ~= n then fail('argv must be a plain list of strings', 2) end
+   if argv[1] == '' then fail('argv[1] must not be empty', 2) end
 end
 
 local function checkenv(env)
    if env == nil then return {} end
-   if type(env) ~= 'table' then fail('env must be a table') end
+   if type(env) ~= 'table' then fail('env must be a table', 2) end
    local out = {}
-   if #env > 0 then
-      for i = 1, #env do
-         local e = checkstring(env[i], 'env[' .. i .. ']')
-         if not e:find('=', 2, true) then fail('env[' .. i .. '] must be K=V') end
+   local n = #env
+   if n > 0 then
+      local count = 0
+      for k in pairs(env) do
+         count = count + 1
+         if math.type(k) ~= 'integer' or k < 1 or k > n then
+            fail('env must be a list of K=V strings or a map, not both', 2)
+         end
+      end
+      if count ~= n then fail('env must be a plain list of K=V strings', 2) end
+      for i = 1, n do
+         local e = checkstring(env[i], 'env[' .. i .. ']', 3)
+         if not e:find('=', 2, true) then
+            fail('env[' .. i .. '] must be K=V', 2)
+         end
          out[i] = e
       end
    else
       for k, v in pairs(env) do
-         checkstring(k, 'env key')
-         checkstring(v, 'env value')
-         if k == '' or k:find('=', 1, true) then fail('bad env key ' .. k) end
+         checkstring(k, 'env key', 3)
+         checkstring(v, 'env value', 3)
+         if k == '' or k:find('=', 1, true) then fail('bad env key ' .. k, 2) end
          out[#out + 1] = k .. '=' .. v
       end
    end
@@ -144,7 +183,7 @@ local function choose(v, default, allowed, what)
    for _, a in ipairs(allowed) do
       if v == a then return v end
    end
-   fail(what .. " must be one of '" .. table.concat(allowed, "', '") .. "'")
+   fail(what .. " must be one of '" .. table.concat(allowed, "', '") .. "'", 2)
 end
 
 -- moves fd above stdio so that a closed stdin cannot make a pipe end
@@ -171,6 +210,9 @@ function spawn.spawn(argv, opts)
    checkargv(argv)
    opts = opts or {}
    if type(opts) ~= 'table' then fail('opts must be a table') end
+   for k in pairs(opts) do
+      if not OPTIONS[k] then fail('unknown option ' .. tostring(k)) end
+   end
    local env = checkenv(opts.env)
    local prog = opts.path and checkstring(opts.path, 'path') or argv[1]
    if opts.cwd ~= nil then checkstring(opts.cwd, 'cwd') end
@@ -211,7 +253,8 @@ function spawn.spawn(argv, opts)
    if opts.cwd then actions[#actions + 1] = {'chdir', opts.cwd} end
 
    local call = opts.search and unix.posix_spawnp or unix.posix_spawn
-   local pid, err = call(prog, argv, env, {actions = actions})
+   local pid, err = call(prog, argv, env,
+                         {actions = actions, sigdefault = SIGPIPE_DEFAULT})
    if not pid then cleanup() return nil, err end
    for _, fd in pairs(theirs) do unix.close(fd) end
 
