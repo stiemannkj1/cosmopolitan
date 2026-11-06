@@ -23,8 +23,20 @@
                    Default is empty.  Pass unix.environ() to inherit.
      opts.cwd      directory the child starts in
      opts.stdin    'pipe' (default), 'null' or 'inherit'
-     opts.stdout   'pipe' (default), 'null' or 'inherit'
-     opts.stderr   'pipe' (default), 'null', 'inherit' or 'stdout'
+     opts.stdout   'tmpfile' (default), 'pipe', 'null' or 'inherit'
+     opts.stderr   'tmpfile' (default), 'pipe', 'null', 'inherit' or 'stdout'
+
+     The default captures stdout and stderr into two separate anonymous
+     temporary files, so a child can write any amount without ever
+     blocking on a full pipe, and nothing needs draining.  The files have
+     no name, live in $TMPDIR and vanish when the process object is
+     collected or redbean exits, however it exits.  Because a file has no
+     end of file signal, p:readStdout() waits for the child to exit and
+     then returns everything it wrote, and p:readStdout(n) polls the file
+     in naps of up to 10ms.  Choose 'pipe' to read output while the child
+     runs, and to get a wakeup the moment output arrives, at the price of
+     the draining described below.  A child that writes without limit
+     fills the disk under 'tmpfile' and memory under 'pipe'.
 
      Not compatible with redbean's -S flags or with unix.pledge and
      unix.unveil.  Under them spawn fails closed, returning nil and an
@@ -47,13 +59,18 @@
      p:readStderr([n])    same, for standard error
      p:wait([nohang])     exit status, false if nohang and still running
                           (a nohang poll also drains the pipes)
+     p:wait(ms)           same, but sleeps in poll for up to ms milliseconds,
+                          waking at once on output or exit
      p:kill([sig])        sends sig, default SIGTERM
 
      The second value of a failed method is a unix.Errno when the system
-     call failed and a plain message string when the stream was never a
-     pipe or is already closed, so test it before calling :errno() on it.
+     call failed and a plain message string when the stream was never
+     captured or is already closed, so test it before calling :errno()
+     on it.  spawn.spawn returns a message string if no temporary file
+     could be created.
 
-     Every blocking call, and every nohang poll of wait, also drains the
+     With 'pipe' streams every blocking call, and every nohang poll of
+     wait, also drains the
      other pipes into memory while it waits, so a child that fills one
      pipe while the parent waits on another can never deadlock.  The
      cost is that output nobody reads stays buffered until the object
@@ -220,8 +237,8 @@ function spawn.spawn(argv, opts)
    if opts.cwd ~= nil then checkstring(opts.cwd, 'cwd') end
    local modes = {
       stdin = choose(opts.stdin, 'pipe', {'pipe', 'null', 'inherit'}, 'stdin'),
-      stdout = choose(opts.stdout, 'pipe', {'pipe', 'null', 'inherit'}, 'stdout'),
-      stderr = choose(opts.stderr, 'pipe', {'pipe', 'null', 'inherit', 'stdout'}, 'stderr'),
+      stdout = choose(opts.stdout, 'tmpfile', {'tmpfile', 'pipe', 'null', 'inherit'}, 'stdout'),
+      stderr = choose(opts.stderr, 'tmpfile', {'tmpfile', 'pipe', 'null', 'inherit', 'stdout'}, 'stderr'),
    }
 
    sweep()
@@ -229,9 +246,12 @@ function spawn.spawn(argv, opts)
    local actions = {}
    local mine = {}    -- our ends of the pipes, name -> fd
    local theirs = {}  -- child's ends, closed in the parent after spawning
+   local files = {}   -- anonymous temporary files, name -> {file, fd, off}
+   local closing = {} -- descriptors the child must close after its dup2s
    local function cleanup()
       for _, fd in pairs(mine) do unix.close(fd) end
       for _, fd in pairs(theirs) do unix.close(fd) end
+      for _, st in pairs(files) do pcall(st.file.close, st.file) end
    end
 
    local order = {{'stdin', 0}, {'stdout', 1}, {'stderr', 2}}
@@ -245,6 +265,18 @@ function spawn.spawn(argv, opts)
          if target ~= 0 then child, parent = w, r end
          theirs[name], mine[name] = child, parent
          actions[#actions + 1] = {'dup2', child, target}
+      elseif mode == 'tmpfile' then
+         local f, emsg = io.tmpfile()
+         if not f then cleanup() return nil, emsg end
+         local fd = unix.fileno(f)
+         if not fd or fd < 3 then
+            pcall(f.close, f)
+            cleanup()
+            return nil, 'could not get a temporary file descriptor'
+         end
+         files[name == 'stdout' and 'out' or 'err'] = {file = f, fd = fd, off = 0}
+         actions[#actions + 1] = {'dup2', fd, target}
+         closing[#closing + 1] = fd
       elseif mode == 'null' then
          actions[#actions + 1] = {'open', target, '/dev/null',
                                   target == 0 and O_RDONLY or O_WRONLY}
@@ -252,6 +284,8 @@ function spawn.spawn(argv, opts)
          actions[#actions + 1] = {'dup2', 1, 2}
       end
    end
+   -- the child keeps only the copies on 0, 1 and 2
+   for _, fd in ipairs(closing) do actions[#actions + 1] = {'close', fd} end
    if opts.cwd then actions[#actions + 1] = {'chdir', opts.cwd} end
 
    local call = opts.search and unix.posix_spawnp or unix.posix_spawn
@@ -263,8 +297,10 @@ function spawn.spawn(argv, opts)
    return setmetatable({
       pid = pid,
       fds = {['in'] = mine.stdin, out = mine.stdout, err = mine.stderr},
-      piped = {['in'] = mine.stdin ~= nil, out = mine.stdout ~= nil,
-               err = mine.stderr ~= nil},
+      piped = {['in'] = mine.stdin ~= nil,
+               out = mine.stdout ~= nil or files.out ~= nil,
+               err = mine.stderr ~= nil or files.err ~= nil},
+      files = files,
       buf = {out = {}, err = {}},
    }, Process)
 end
@@ -321,13 +357,61 @@ local function take(self, name, n)
    return s
 end
 
+-- Reads a captured temporary file.  pread is used because the child
+-- shares the file offset, and moving it would corrupt what it writes.
+local function readfile(self, name, n)
+   local st = self.files[name]
+   if n == nil then
+      -- no end of file signal exists for a file, so the child exiting is it
+      local code, err = self:wait()
+      if code == nil then return nil, err end
+      local parts = {}
+      while true do
+         local data, rerr = unix.read(st.fd, 1 << 20, st.off)
+         if data == nil then
+            if rerr:errno() ~= EINTR then return nil, rerr end
+         elseif data == '' then
+            break
+         else
+            parts[#parts + 1] = data
+            st.off = st.off + #data
+         end
+      end
+      return table.concat(parts)
+   end
+   local nap = 1e6
+   while true do
+      -- look at the child first, so that a final write is never missed
+      local exited = self.status ~= nil
+      if not exited then
+         local code, err = self:wait(true)
+         if code == nil then return nil, err end
+         exited = code ~= false
+      end
+      local data, rerr = unix.read(st.fd, n, st.off)
+      if data == nil then
+         if rerr:errno() ~= EINTR then return nil, rerr end
+      elseif #data > 0 then
+         st.off = st.off + #data
+         return data
+      elseif exited then
+         return ''
+      end
+      if not exited then
+         unix.nanosleep(0, math.floor(nap))
+         nap = math.min(nap * 2, 10e6)
+      end
+   end
+end
+
 local function readstream(self, name, n)
    if not self.piped[name] then
-      return nil, (name == 'out' and 'stdout' or 'stderr') .. ' is not a pipe'
+      return nil, (name == 'out' and 'stdout' or 'stderr') .. ' is not captured'
    end
    if n ~= nil and (math.type(n) ~= 'integer' or n < 1) then
       error('cosmo-spawn: n must be a positive integer', 3)
    end
+   if self.files[name] then return readfile(self, name, n) end
    if n then
       while #self.buf[name] == 0 and self.fds[name] do
          local _, err = pump(self)
@@ -388,8 +472,24 @@ local function result(self)
    return 128 + sig, sig
 end
 
+local function monotonic_ms()
+   local sec, nsec = unix.clock_gettime(unix.CLOCK_MONOTONIC)
+   return sec * 1000 + nsec / 1e6
+end
+
 function Process:wait(nohang)
    if self.status then return result(self) end
+   -- a number means wait at most that many milliseconds, sleeping inside
+   -- poll so that the process wakes only for output, exit or the deadline
+   local deadline
+   local nap = 1e6
+   if type(nohang) == 'number' then
+      if nohang ~= nohang or nohang < 0 then
+         fail('timeout must be a non-negative number of milliseconds', 1)
+      end
+      deadline = monotonic_ms() + nohang
+      nohang = true
+   end
    while true do
       local pid, ws = unix.wait(self.pid, WNOHANG)
       if pid == nil then
@@ -399,12 +499,26 @@ function Process:wait(nohang)
          orphans[self.pid] = nil
          return result(self)
       elseif nohang then
-         -- keep the pipes drained so polling callers can't deadlock either
-         if self.fds.out or self.fds.err then
-            local _, err = pump(self, false, 0)
-            if err then return nil, err end
+         local remaining = deadline and (deadline - monotonic_ms()) or 0
+         if remaining <= 0 then
+            -- keep the pipes drained so polling callers can't deadlock
+            if self.fds.out or self.fds.err then
+               local _, err = pump(self, false, 0)
+               if err then return nil, err end
+            end
+            return false
          end
-         return false
+         if self.fds.out or self.fds.err then
+            local _, err = pump(self, false, math.ceil(remaining))
+            if err then return nil, err end
+         else
+            -- both pipes are closed but the child has not been reaped yet,
+            -- which usually lasts microseconds after exit, so nap briefly
+            -- and back off if it turns out the child is still running
+            unix.nanosleep(0, math.floor(math.min(nap, remaining * 1e6)))
+            nap = math.min(nap * 2, 20e6)
+         end
+         goto continue
       end
       if not (self.fds.out or self.fds.err) then
          if not nohang then
@@ -421,6 +535,7 @@ function Process:wait(nohang)
          local _, err = pump(self, false, nohang and 0 or 50)
          if err then return nil, err end
       end
+      ::continue::
    end
 end
 
@@ -433,6 +548,10 @@ Process.__gc = function(self)
    for name, fd in pairs(self.fds) do
       unix.close(fd)
       self.fds[name] = nil
+   end
+   for name, st in pairs(self.files) do
+      pcall(st.file.close, st.file)
+      self.files[name] = nil
    end
    if not self.status then
       unix.kill(self.pid, SIGKILL)

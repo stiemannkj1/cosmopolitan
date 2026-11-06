@@ -234,7 +234,22 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
       intptr_t sigev;
       if (!(sigev = CreateEvent(0, 0, 0, 0)))
         return __winerr();
-      filehands[pn] = sigev;
+      // pipe handles are always signaled on the New Technology, so
+      // waiting on one returns at once and reports data that isn't
+      // there. pipes are checked with PeekNamedPipe() above instead,
+      // and since the wait below is capped at POLL_INTERVAL_MS they
+      // get checked again soon enough without spinning.
+      int64_t waithands[ARRAYLEN(filehands) + 1];
+      uint32_t waitmap[ARRAYLEN(filehands)];
+      uint32_t nw = 0;
+      for (i = 0; i < pn; ++i) {
+        if (GetFileType(filehands[i]) != kNtFileTypePipe) {
+          waithands[nw] = filehands[i];
+          waitmap[nw] = i;
+          ++nw;
+        }
+      }
+      waithands[nw] = sigev;
       pt = _pthread_self();
       pt->pt_event = sigev;
       pt->pt_blkmask = waitmask;
@@ -242,17 +257,17 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
                             memory_order_release);
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       int sig = 0;
-      uint32_t wi = pn;
+      uint32_t wi = nw;
       if (!_is_canceled() &&
           !(_weaken(__sig_get) && (sig = _weaken(__sig_get)(waitmask))))
-        wi = WaitForMultipleObjects(pn + 1, filehands, 0, waitfor);
+        wi = WaitForMultipleObjects(nw + 1, waithands, 0, waitfor);
       //!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!/!//
       atomic_store_explicit(&pt->pt_blocker, 0, memory_order_release);
       CloseHandle(sigev);
       if (wi == -1u)
         // win32 wait failure
         return __winerr();
-      if (wi == pn) {
+      if (wi == nw) {
         // our signal event was signalled
         int handler_was_called = 0;
         if (sig)
@@ -261,11 +276,12 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
           return -1;
         if (handler_was_called)
           return eintr();
-      } else if ((wi ^ kNtWaitAbandoned) < pn) {
+      } else if ((wi ^ kNtWaitAbandoned) < nw) {
         // this is possibly because a process or thread was killed
-        fds[fileindices[wi ^ kNtWaitAbandoned]].revents = POLLERR_;
+        fds[fileindices[waitmap[wi ^ kNtWaitAbandoned]]].revents = POLLERR_;
         ++rc;
-      } else if (wi < pn) {
+      } else if (wi < nw) {
+        wi = waitmap[wi];
         fi = fileindices[wi];
         // one of the handles we polled is ready for fi/o
         if (GetConsoleMode(filehands[wi], &cm)) {
@@ -287,7 +303,8 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
           if ((fds[fi].events & POLLRDNORM_) &&
               (g_fds.p[fds[fi].fd].flags & O_ACCMODE) != O_WRONLY) {
             if (PeekNamedPipe(filehands[wi], 0, 0, 0, &avail, 0)) {
-              fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
+              if (avail)
+                fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
             } else if (GetLastError() == kNtErrorHandleEof ||
                        GetLastError() == kNtErrorBrokenPipe) {
               fds[fi].revents = POLLHUP_;

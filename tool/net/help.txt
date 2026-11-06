@@ -6289,7 +6289,8 @@ COSMO-SPAWN MODULE
 
   spawn.spawn(argv:List<str>[, opts:table])
       ├─→ process:userdata
-      └─→ nil, unix.Errno
+      ├─→ nil, unix.Errno
+      └─→ nil, message:str
 
     Starts a program. Invalid arguments raise an error. `argv` must be a
     non empty list of strings without NUL bytes, and `argv[1]` is the
@@ -6299,8 +6300,22 @@ COSMO-SPAWN MODULE
     - `path` is the program to run if it isn't `argv[1]`.
     - `env` is a list of "K=V" strings or a map. Default is empty.
     - `cwd` is the working directory of the child.
-    - `stdin`, `stdout` and `stderr` are 'pipe' by default and may also
-      be 'null' or 'inherit'. `stderr` may also be 'stdout'.
+    - `stdin` is 'pipe' by default and may also be 'null' or 'inherit'.
+    - `stdout` and `stderr` are 'tmpfile' by default and may also be
+      'pipe', 'null' or 'inherit'. `stderr` may also be 'stdout'.
+
+    The 'tmpfile' default captures each stream into its own anonymous
+    temporary file in $TMPDIR, so a child can write any amount without
+    blocking on a full pipe and nothing has to be drained. The files have
+    no name and vanish when the object is collected or redbean exits.
+    A file has no end of file signal, so readStdout() waits for the child
+    to exit before returning, and readStdout(n) polls the file in naps of
+    up to 10 milliseconds. Use 'pipe' to read while the child runs and to
+    be woken the moment output arrives, at the price of buffering it in
+    memory. A child that writes without limit fills the disk under
+    'tmpfile' and memory under 'pipe'. A message string is returned if
+    no temporary file could be created, which includes a process that
+    pledge() or unveil() leaves unable to create files.
 
     When the returned object is garbage collected, which includes
     shutdown, its file descriptors are closed and a running child is
@@ -6319,7 +6334,7 @@ COSMO-SPAWN MODULE
       ├─→ nil, unix.Errno
       └─→ nil, message:str
 
-    Writes all of `data` to the child's standard input. Other pipes are
+    Writes all of `data` to the child's standard input. Output pipes are
     drained while this waits, so it can't deadlock. The second value is
     a message string rather than an Errno when standard input wasn't a
     pipe, was already closed, or the child closed its end.
@@ -6336,12 +6351,13 @@ COSMO-SPAWN MODULE
       └─→ nil, message:str
 
     Reads standard output or standard error. Without `n` this reads to
-    end of file and returns everything. With a positive `n` it blocks
-    until some data is available and returns at most `n` bytes, or an
-    empty string at end of file. Any other `n` raises an error. Fails if
-    that stream wasn't a pipe.
+    end of file and returns everything, which for 'tmpfile' means after
+    the child exits. With a positive `n` it blocks until some data is
+    available and returns at most `n` bytes, or an empty string at end of
+    file. Any other `n` raises an error. Fails if that stream wasn't
+    captured.
 
-  p:wait([nohang:bool])
+  p:wait([nohang:bool|timeout:number])
       ├─→ exitcode:int[, signal:int]
       ├─→ false
       └─→ nil, unix.Errno
@@ -6351,7 +6367,11 @@ COSMO-SPAWN MODULE
     returned second. If `nohang` is true then false is returned while
     the child is still running. Each nohang poll also drains the output
     pipes into memory, so polling in a loop can't deadlock a child that
-    writes a lot.
+    writes a lot. If a number of milliseconds is passed instead, the call
+    sleeps in poll() for at most that long, waking as soon as the child
+    writes output or exits, and returns false if the time ran out first.
+    A negative or NaN timeout raises an error. On Windows a pipe is
+    noticed within 10 milliseconds of output arriving.
 
   p:kill([sig:int])
       ├─→ true

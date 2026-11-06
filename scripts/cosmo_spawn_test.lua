@@ -253,7 +253,7 @@ do
    check('read at eof is empty', p:readStdout(5) == '')
    p:wait()
 
-   p = assert(spawn.spawn(H('flood'), {stderr = 'null'}))
+   p = assert(spawn.spawn(H('flood'), {stdout = 'pipe', stderr = 'null'}))
    check('flood read bounded', #p:readStdout(1000) > 0)
    check('kill returns true', p:kill() == true)
    local code, sig = p:wait()
@@ -278,6 +278,72 @@ do
    if done == false then p:kill() p:wait() end  -- never hang on failure
    check('nohang polling drains and finishes', done == 0, tostring(done))
    check('nohang drained output intact', done ~= 0 or #p:readStdout() == 64 * 65536)
+
+   -- wait(ms) sleeps in poll, returns false on timeout and wakes on exit
+   local function ms()
+      local sec, nsec = unix.clock_gettime(unix.CLOCK_MONOTONIC)
+      return sec * 1000 + nsec / 1e6
+   end
+   p = assert(spawn.spawn(H('cat')))
+   local t0 = ms()
+   check('wait timeout returns false', p:wait(120) == false)
+   local waited = ms() - t0
+   check('wait timeout really sleeps', waited >= 100 and waited < 3000, waited)
+   check('wait zero is a poll', p:wait(0) == false)
+   raises('wait rejects negative', function() p:wait(-1) end, 'timeout must be')
+   p:writeStdin('x')
+   check('wait timeout still running', p:wait(50) == false)
+   p:closeStdin()
+   t0 = ms()
+   check('wait timeout sees exit', p:wait(10000) == 0)
+   check('wait timeout wakes at exit', ms() - t0 < 5000, ms() - t0)
+   check('wait timeout kept output', p:readStdout() == 'x')
+
+   p = assert(spawn.spawn(H('flood', '64'), {stderr = 'null'}))
+   local r
+   deadline = unix.clock_gettime() + 30
+   repeat r = p:wait(100) until r ~= false or unix.clock_gettime() > deadline
+   if r == false then p:kill() p:wait() end
+   check('wait timeout drains flood', r == 0, tostring(r))
+   check('wait timeout flood intact', r ~= 0 or #p:readStdout() == 64 * 65536)
+
+   -- default capture goes to temporary files, so a flood needs no polling
+   -- a pipe with a live, idle writer must still honor the timeout, which
+   -- Windows poll() does not, so this guards the fallback there
+   p = assert(spawn.spawn(H('cat'), {stdout = 'pipe', stderr = 'pipe'}))
+   t0 = ms()
+   check('pipe wait timeout returns false', p:wait(150) == false)
+   check('pipe wait timeout bounded', ms() - t0 >= 100 and ms() - t0 < 5000, ms() - t0)
+   p:writeStdin('y')
+   p:closeStdin()
+   check('pipe wait timeout sees exit', p:wait(10000) == 0)
+   check('pipe wait timeout kept output', p:readStdout() == 'y')
+
+   p = assert(spawn.spawn(H('flood', '64')))
+   check('tmpfile captures a flood', #p:readStdout() == 64 * 65536)
+   check('tmpfile flood exit', p:wait() == 0)
+   check('tmpfile second read is empty', p:readStdout() == '')
+
+   -- explicit pipes keep working, and polling still drains them
+   for _, poll in ipairs({'true', '100'}) do
+      p = assert(spawn.spawn(H('flood', '64'), {stdout = 'pipe', stderr = 'null'}))
+      local r
+      deadline = unix.clock_gettime() + 30
+      repeat
+         r = p:wait(poll == 'true' or tonumber(poll))
+         if r == false then unix.nanosleep(0, 2000000) end
+      until r ~= false or unix.clock_gettime() > deadline
+      if r == false then p:kill() p:wait() end
+      check('pipe wait(' .. poll .. ') drains flood', r == 0, tostring(r))
+      check('pipe wait(' .. poll .. ') flood intact',
+            r ~= 0 or #p:readStdout() == 64 * 65536)
+   end
+
+   -- stdout and stderr go to two different files
+   p = assert(spawn.spawn(H('stderr', 'to-stderr')))
+   check('separate stderr file', p:readStderr() == 'to-stderr')
+   check('separate stdout file', p:readStdout() == '')
+   check('stderr helper exit', p:wait() == 3)
 
    p = assert(spawn.spawn(H('cat')))
    check('wait nohang while running', p:wait(true) == false)

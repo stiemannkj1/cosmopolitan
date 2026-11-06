@@ -64,7 +64,10 @@ elseif mode == 'pledged' or mode == 'unveiled' then
       assert(unix.unveil(unix.getcwd(), 'r'))
       assert(unix.unveil(nil, nil))
    end
-   local p, err = require('cosmo-spawn').spawn({arg[-1], '-i', arg[0], 'exit', '0'})
+   -- null streams, so that no temporary file is needed and the refusal that
+   -- comes from the sandbox is the one that gets reported
+   local p, err = require('cosmo-spawn').spawn({arg[-1], '-i', arg[0], 'exit', '0'},
+                                               {stdout = 'null', stderr = 'null'})
    if p then
       p:wait()
       io.stdout:write('spawned\n')
