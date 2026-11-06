@@ -6349,7 +6349,9 @@ COSMO-SPAWN MODULE
     Waits for the child and returns its exit code. If it died from a
     signal then the code is 128 plus the signal, and the signal is
     returned second. If `nohang` is true then false is returned while
-    the child is still running.
+    the child is still running. Each nohang poll also drains the output
+    pipes into memory, so polling in a loop can't deadlock a child that
+    writes a lot.
 
   p:kill([sig:int])
       ├─→ true

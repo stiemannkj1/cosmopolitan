@@ -47,7 +47,12 @@ elseif mode == 'stderr' then
    os.exit(3, true)
 elseif mode == 'flood' then
    local z = string.rep('\0', 65536)
-   while true do io.stdout:write(z) end
+   -- flood [n] stops after n blocks of 64KB, default is to never stop
+   local n = tonumber(arg[2])
+   while not n or n > 0 do
+      io.stdout:write(z)
+      if n then n = n - 1 end
+   end
 elseif mode == 'sleep' then
    unix.nanosleep(tonumber(arg[2]) or 60, 0)
 elseif mode == 'pledged' or mode == 'unveiled' then

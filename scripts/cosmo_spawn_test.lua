@@ -265,6 +265,20 @@ do
    end
    check('kill after exit is false', p:kill() == false)
 
+   -- polling wait(true) must drain, or a child writing more than the pipe
+   -- buffer would block forever while the caller spins
+   p = assert(spawn.spawn(H('flood', '64'), {stderr = 'null'}))
+   local done
+   local deadline = unix.clock_gettime() + 30
+   while unix.clock_gettime() < deadline do
+      done = p:wait(true)
+      if done ~= false then break end
+      unix.nanosleep(0, 5000000)
+   end
+   if done == false then p:kill() p:wait() end  -- never hang on failure
+   check('nohang polling drains and finishes', done == 0, tostring(done))
+   check('nohang drained output intact', done ~= 0 or #p:readStdout() == 64 * 65536)
+
    p = assert(spawn.spawn(H('cat')))
    check('wait nohang while running', p:wait(true) == false)
    p:closeStdin()

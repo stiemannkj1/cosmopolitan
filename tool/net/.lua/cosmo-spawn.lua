@@ -46,16 +46,18 @@
      p:readStdout([n])    reads to end of file, or at most n bytes
      p:readStderr([n])    same, for standard error
      p:wait([nohang])     exit status, false if nohang and still running
+                          (a nohang poll also drains the pipes)
      p:kill([sig])        sends sig, default SIGTERM
 
      The second value of a failed method is a unix.Errno when the system
      call failed and a plain message string when the stream was never a
      pipe or is already closed, so test it before calling :errno() on it.
 
-     Every blocking call also drains the other pipes into memory while it
-     waits, so a child that fills one pipe while the parent waits on
-     another can never deadlock.  The cost is that output nobody reads
-     stays buffered until the object is collected.
+     Every blocking call, and every nohang poll of wait, also drains the
+     other pipes into memory while it waits, so a child that fills one
+     pipe while the parent waits on another can never deadlock.  The
+     cost is that output nobody reads stays buffered until the object
+     is collected.
 
      p:wait() returns the exit code, plus the signal number as a second
      value if the child was killed by a signal, in which case the first
@@ -397,6 +399,11 @@ function Process:wait(nohang)
          orphans[self.pid] = nil
          return result(self)
       elseif nohang then
+         -- keep the pipes drained so polling callers can't deadlock either
+         if self.fds.out or self.fds.err then
+            local _, err = pump(self, false, 0)
+            if err then return nil, err end
+         end
          return false
       end
       if not (self.fds.out or self.fds.err) then
