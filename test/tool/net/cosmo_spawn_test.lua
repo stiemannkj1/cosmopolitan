@@ -1,10 +1,10 @@
 -- Functional tests for unix.posix_spawn(p) and the cosmo-spawn wrapper.
 --
---   o/x86_64/tool/net/redbean -i scripts/cosmo_spawn_test.lua
---   qemu-aarch64 o/aarch64/tool/net/redbean -i scripts/cosmo_spawn_test.lua
---   wine o/redbean.com -i scripts/cosmo_spawn_test.lua
+--   o/x86_64/tool/net/redbean -i test/tool/net/cosmo_spawn_test.lua
+--   qemu-aarch64 o/aarch64/tool/net/redbean -i test/tool/net/cosmo_spawn_test.lua
+--   wine o/redbean.com -i test/tool/net/cosmo_spawn_test.lua
 --
--- Child programs are redbean itself running scripts/cosmo_spawn_helper.lua,
+-- Child programs are redbean itself running test/tool/net/cosmo_spawn_helper.lua,
 -- so the suite needs no coreutils and runs unchanged on Windows.  On
 -- other systems a few extra cases also run the real touch(1).  The suite
 -- only creates files inside a fresh temporary directory.

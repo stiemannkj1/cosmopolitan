@@ -134,16 +134,16 @@ action helper and two table entries. `tool/net/.lua/cosmo-spawn.lua` is
 new. `tool/net/BUILD.mk` adds the Lua file to the redbean and
 redbean-demo zip lists and to the `-C2` zip flag rule, mirroring
 `cosmo-lfs.lua`. `tool/net/help.txt` documents both layers.
-`scripts/cosmo_spawn_test.lua` and `scripts/cosmo_spawn_helper.lua` are
+`test/tool/net/cosmo_spawn_test.lua` and `test/tool/net/cosmo_spawn_helper.lua` are
 the tests. `o/redbean.com`, which is tracked, is rebuilt as a fat binary.
 
 ## Tests
 
-The suite is `scripts/cosmo_spawn_test.lua`, run as
-`redbean -i scripts/cosmo_spawn_test.lua`. Windows has no `touch`, `cat`
+The suite is `test/tool/net/cosmo_spawn_test.lua`, run as
+`redbean -i test/tool/net/cosmo_spawn_test.lua`. Windows has no `touch`, `cat`
 or `sort`, and an aarch64 build under qemu should not depend on host
 tools either, so the child program is redbean itself running
-`scripts/cosmo_spawn_helper.lua`. The helper has small modes named
+`test/tool/net/cosmo_spawn_helper.lua`. The helper has small modes named
 `argv`, `touch`, `cat`, `sortr`, `env`, `exit`, `stderr`, `flood`, `sleep`
 and `pid`. The same file therefore runs unchanged everywhere. It exits
 through `os.exit(code, true)` because `unix.exit` would skip the state
@@ -258,5 +258,5 @@ Nothing is committed. To get back to a clean tree,
 
 ```
 git checkout third_party/lua/lunix.c tool/net/BUILD.mk tool/net/help.txt o/redbean.com
-rm scripts/cosmo_spawn_test.lua scripts/cosmo_spawn_helper.lua tool/net/.lua/cosmo-spawn.lua REDBEAN_SPAWN_PLAN.md
+rm test/tool/net/cosmo_spawn_test.lua test/tool/net/cosmo_spawn_helper.lua tool/net/.lua/cosmo-spawn.lua REDBEAN_SPAWN_PLAN.md
 ```

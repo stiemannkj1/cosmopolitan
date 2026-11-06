@@ -28,6 +28,9 @@ TEST_TOOL_NET_CHECKS =						\
 	$(TEST_TOOL_NET_SRCS_TEST:%.c=o/$(MODE)/%.runs)		\
 	$(TEST_TOOL_NET_LUAS_TEST:%.lua=o/$(MODE)/%.lua.runs)
 
+# cosmo-spawn runs other programs, which the default sandbox forbids
+o/$(MODE)/test/tool/net/cosmo_spawn_test.lua.runs: private .UNSANDBOXED = 1
+
 TEST_TOOL_NET_DIRECTDEPS =					\
 	LIBC_CALLS						\
 	LIBC_FMT						\
