@@ -100,7 +100,9 @@
 #include "libc/sysv/consts/tcp.h"
 #include "libc/sysv/consts/termios.h"
 #include "libc/sysv/consts/utime.h"
+#include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/consts/w.h"
+#include "libc/sysv/consts/waitid.h"
 #include "libc/sysv/errfuns.h"
 #include "libc/thread/thread.h"
 #include "libc/time.h"
@@ -919,6 +921,36 @@ static int LuaUnixWait(lua_State *L) {
     return 3;
   } else {
     return LuaUnixSysretErrno(L, "wait", olderr);
+  }
+}
+
+// unix.waitid([pid:int, options:int])
+//     ├─→ pid:int, code:int, status:int
+//     └─→ nil, unix.Errno
+static int LuaUnixWaitid(lua_State *L) {
+  siginfo_t si;
+  int idtype, olderr = errno;
+  lua_Integer pid = luaL_optinteger(L, 1, -1);
+  int options = luaL_optinteger(L, 2, 0) | WEXITED;
+  unsigned id;
+  if (pid == -1) {
+    idtype = P_ALL;
+    id = 0;
+  } else if (pid > 0) {
+    idtype = P_PID;
+    id = pid;
+  } else {
+    idtype = P_PGID;
+    id = -pid;  // zero means the process group of the caller
+  }
+  memset(&si, 0, sizeof(si));
+  if (!waitid(idtype, id, &si, options)) {
+    lua_pushinteger(L, si.si_pid);
+    lua_pushinteger(L, si.si_code);
+    lua_pushinteger(L, si.si_status);
+    return 3;
+  } else {
+    return LuaUnixSysretErrno(L, "waitid", olderr);
   }
 }
 
@@ -3547,6 +3579,7 @@ static const luaL_Reg kLuaUnix[] = {
     {"utimensat", LuaUnixUtimensat},      // change access/modified time
     {"verynice", LuaUnixVerynice},        // lowest priority
     {"wait", LuaUnixWait},                // wait for child to change status
+    {"waitid", LuaUnixWaitid},            // wait for child, without reaping
     {"write", LuaUnixWrite},              // write to file or socket
     {0},                                  //
 };
@@ -3623,6 +3656,12 @@ int LuaUnix(lua_State *L) {
 
   // wait() options
   LuaSetIntField(L, "WNOHANG", WNOHANG);
+  LuaSetIntField(L, "WNOWAIT", WNOWAIT);
+
+  // waitid() si_code values
+  LuaSetIntField(L, "CLD_EXITED", CLD_EXITED);
+  LuaSetIntField(L, "CLD_KILLED", CLD_KILLED);
+  LuaSetIntField(L, "CLD_DUMPED", CLD_DUMPED);
 
   // socket() family
   LuaSetIntField(L, "AF_UNSPEC", AF_UNSPEC);

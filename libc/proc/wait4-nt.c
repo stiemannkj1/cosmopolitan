@@ -54,19 +54,32 @@ textwindows static int __proc_reap(struct Proc *pr, int *wstatus,
   return pr->pid;
 }
 
+// reports a zombie's status without removing it, for WNOWAIT
+textwindows static int __proc_peek(struct Proc *pr, int *wstatus,
+                                   struct rusage *opt_out_rusage) {
+  if (wstatus)
+    *wstatus = pr->wstatus;
+  if (opt_out_rusage)
+    *opt_out_rusage = pr->ru;
+  return pr->pid;
+}
+
 textwindows static int __proc_check(int pid, int *wstatus,
-                                    struct rusage *opt_out_rusage) {
+                                    struct rusage *opt_out_rusage,
+                                    bool nowait) {
   struct Dll *e;
   for (e = dll_first(__proc.zombies); e; e = dll_next(__proc.zombies, e)) {
     struct Proc *pr = PROC_CONTAINER(e);
     if (pid == -1 || pid == pr->pid)
-      return __proc_reap(pr, wstatus, opt_out_rusage);
+      return nowait ? __proc_peek(pr, wstatus, opt_out_rusage)
+                    : __proc_reap(pr, wstatus, opt_out_rusage);
   }
   return 0;
 }
 
 textwindows static int __proc_wait(int pid, int *wstatus, int options,
-                                   struct rusage *rusage, sigset_t waitmask) {
+                                   struct rusage *rusage, sigset_t waitmask,
+                                   bool nowait) {
   for (;;) {
 
     // check for signals and cancelation
@@ -84,7 +97,7 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
     // check for zombie to harvest
     __proc_lock();
   CheckForZombies:
-    int rc = __proc_check(pid, wstatus, rusage);
+    int rc = __proc_check(pid, wstatus, rusage, nowait);
 
     // if there's no zombies left
     // check if there's any living processes
@@ -190,7 +203,8 @@ textwindows static int __proc_wait(int pid, int *wstatus, int options,
         break;
       case PROC_ZOMBIE:
         // exit happened and we're the first to know
-        rc = __proc_reap(pr, wstatus, rusage);
+        rc = nowait ? __proc_peek(pr, wstatus, rusage)
+                    : __proc_reap(pr, wstatus, rusage);
         __proc_unlock();
         return rc;
       case PROC_UNDEAD:
@@ -219,7 +233,19 @@ textwindows int sys_wait4_nt(int pid, int *opt_out_wstatus, int options,
     pid = -pid;
   sigset_t m = __sig_block();
   int rc = __proc_wait(pid, opt_out_wstatus, options, opt_out_rusage,
-                       m | 1ull << (SIGCHLD - 1));
+                       m | 1ull << (SIGCHLD - 1), false);
+  __sig_unblock(m);
+  return rc;
+}
+
+// like sys_wait4_nt() but may leave the zombie in place when nowait is set
+// options may only contain WNOHANG
+textwindows int sys_waitid_nt(int pid, int *wstatus, int options, bool nowait) {
+  if (options & ~WNOHANG)
+    return einval();
+  sigset_t m = __sig_block();
+  int rc = __proc_wait(pid, wstatus, options, 0, m | 1ull << (SIGCHLD - 1),
+                       nowait);
   __sig_unblock(m);
   return rc;
 }

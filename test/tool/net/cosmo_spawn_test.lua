@@ -47,6 +47,12 @@ local tmp = absolute(('cosmo-spawn-test-%d-%d'):format(unix.getpid(), unix.clock
 assert(unix.mkdir(tmp, tonumber('700', 8)))
 local function exists(p) return unix.stat(tmp .. '/' .. p) ~= nil end
 
+-- children that sleep write a heartbeat file into tmp while HB_DIR is set,
+-- see the helper, which is how liveness is told on Windows
+local HBENV = {HB_DIR = tmp}
+local ENV = unix.environ()
+ENV[#ENV + 1] = 'HB_DIR=' .. tmp
+
 local function listing(dirpath)
    local names = {}
    local dir = assert(unix.opendir(dirpath or tmp))
@@ -253,91 +259,47 @@ do
    check('read at eof is empty', p:readStdout(5) == '')
    p:wait()
 
-   p = assert(spawn.spawn(H('flood'), {stdout = 'pipe', stderr = 'null'}))
-   check('flood read bounded', #p:readStdout(1000) > 0)
-   check('kill returns true', p:kill() == true)
-   local code, sig = p:wait()
-   if WINDOWS then
-      check('killed child reports failure', code ~= 0, code)
-   else
-      check('killed by SIGTERM', sig == unix.SIGTERM and code == 128 + unix.SIGTERM,
-            tostring(code) .. ' ' .. tostring(sig))
-   end
-   check('kill after exit is false', p:kill() == false)
-
-   -- polling wait(true) must drain, or a child writing more than the pipe
-   -- buffer would block forever while the caller spins
-   p = assert(spawn.spawn(H('flood', '64'), {stderr = 'null'}))
-   local done
-   local deadline = unix.clock_gettime() + 30
-   while unix.clock_gettime() < deadline do
-      done = p:wait(true)
-      if done ~= false then break end
-      unix.nanosleep(0, 5000000)
-   end
-   if done == false then p:kill() p:wait() end  -- never hang on failure
-   check('nohang polling drains and finishes', done == 0, tostring(done))
-   check('nohang drained output intact', done ~= 0 or #p:readStdout() == 64 * 65536)
-
-   -- wait(ms) sleeps in poll, returns false on timeout and wakes on exit
+   -- reading with a timeout on a pipe, false when it runs out
    local function ms()
       local sec, nsec = unix.clock_gettime(unix.CLOCK_MONOTONIC)
       return sec * 1000 + nsec / 1e6
    end
-   p = assert(spawn.spawn(H('cat')))
+   p = assert(spawn.spawn(H('cat'), {stdout = 'pipe'}))
    local t0 = ms()
-   check('wait timeout returns false', p:wait(120) == false)
+   check('pipe read timeout returns false', p:readStdout(10, 120) == false)
    local waited = ms() - t0
-   check('wait timeout really sleeps', waited >= 100 and waited < 3000, waited)
-   check('wait zero is a poll', p:wait(0) == false)
-   raises('wait rejects negative', function() p:wait(-1) end, 'timeout must be')
+   check('pipe read timeout really waits', waited >= 100 and waited < 3000, waited)
+   check('pipe read zero is a look', p:readStdout(10, 0) == false)
    p:writeStdin('x')
-   check('wait timeout still running', p:wait(50) == false)
+   check('pipe read timeout returns data at once', p:readStdout(10, 10000) == 'x')
    p:closeStdin()
-   t0 = ms()
-   check('wait timeout sees exit', p:wait(10000) == 0)
-   check('wait timeout wakes at exit', ms() - t0 < 5000, ms() - t0)
-   check('wait timeout kept output', p:readStdout() == 'x')
+   check('pipe read timeout at eof is empty', p:readStdout(10, 10000) == '')
+   check('cat exits', p:wait() == 0)
+   raises('timeout needs n', function() p:readStdout(nil, 100) end, 'timeout needs n')
+   raises('timeout must be a number', function() p:readStdout(1, 'x') end, 'timeout must be')
+   raises('timeout must be finite', function() p:readStdout(1, math.huge) end, 'timeout must be')
 
-   p = assert(spawn.spawn(H('flood', '64'), {stderr = 'null'}))
-   local r
-   deadline = unix.clock_gettime() + 30
-   repeat r = p:wait(100) until r ~= false or unix.clock_gettime() > deadline
-   if r == false then p:kill() p:wait() end
-   check('wait timeout drains flood', r == 0, tostring(r))
-   check('wait timeout flood intact', r ~= 0 or #p:readStdout() == 64 * 65536)
-
-   -- default capture goes to temporary files, so a flood needs no polling
-   -- a pipe with a live, idle writer must still honor the timeout, which
-   -- Windows poll() does not, so this guards the fallback there
-   p = assert(spawn.spawn(H('cat'), {stdout = 'pipe', stderr = 'pipe'}))
+   -- the same on a temporary file, which has no end of file signal
+   p = assert(spawn.spawn(H('delayecho', '1', 'late')))
    t0 = ms()
-   check('pipe wait timeout returns false', p:wait(150) == false)
-   check('pipe wait timeout bounded', ms() - t0 >= 100 and ms() - t0 < 5000, ms() - t0)
-   p:writeStdin('y')
+   check('file read timeout returns false', p:readStdout(10, 150) == false)
+   waited = ms() - t0
+   check('file read timeout really waits', waited >= 100 and waited < 900, waited)
+   check('file read timeout returns data when it arrives', p:readStdout(10, 10000) == 'late')
+   check('file read timeout at eof is empty', p:readStdout(10, 10000) == '')
+   p:wait()
+
+   -- stderr takes the same arguments
+   p = assert(spawn.spawn(H('cat'), {stderr = 'pipe'}))
+   check('stderr read timeout returns false', p:readStderr(10, 50) == false)
    p:closeStdin()
-   check('pipe wait timeout sees exit', p:wait(10000) == 0)
-   check('pipe wait timeout kept output', p:readStdout() == 'y')
+   p:wait()
+   check('stderr read timeout at eof is empty', p:readStderr(10, 50) == '')
 
    p = assert(spawn.spawn(H('flood', '64')))
    check('tmpfile captures a flood', #p:readStdout() == 64 * 65536)
    check('tmpfile flood exit', p:wait() == 0)
    check('tmpfile second read is empty', p:readStdout() == '')
-
-   -- explicit pipes keep working, and polling still drains them
-   for _, poll in ipairs({'true', '100'}) do
-      p = assert(spawn.spawn(H('flood', '64'), {stdout = 'pipe', stderr = 'null'}))
-      local r
-      deadline = unix.clock_gettime() + 30
-      repeat
-         r = p:wait(poll == 'true' or tonumber(poll))
-         if r == false then unix.nanosleep(0, 2000000) end
-      until r ~= false or unix.clock_gettime() > deadline
-      if r == false then p:kill() p:wait() end
-      check('pipe wait(' .. poll .. ') drains flood', r == 0, tostring(r))
-      check('pipe wait(' .. poll .. ') flood intact',
-            r ~= 0 or #p:readStdout() == 64 * 65536)
-   end
 
    -- stdout and stderr go to two different files
    p = assert(spawn.spawn(H('stderr', 'to-stderr')))
@@ -345,43 +307,219 @@ do
    check('separate stdout file', p:readStdout() == '')
    check('stderr helper exit', p:wait() == 3)
 
-   p = assert(spawn.spawn(H('cat')))
-   check('wait nohang while running', p:wait(true) == false)
-   p:closeStdin()
-   check('wait after stdin closed', p:wait() == 0)
-
-   p = assert(spawn.spawn(H('sleep', '60'), {stdout = 'null'}))
-   p:kill(unix.SIGKILL)
-   p:wait()
-   local ok, err = p:writeStdin('x')
-   check('write to dead child fails cleanly', ok == nil and err ~= nil)
-
-   raises('write requires string', function() p:writeStdin(5) end, 'must be a string')
+   -- a pipe flood is read through readStdout while waiting
+   p = assert(spawn.spawn(H('flood', '64'), {stdout = 'pipe', stderr = 'null'}))
+   local got, deadline = 0, ms() + 60000
+   while ms() < deadline do
+      local d = p:readStdout(65536, 100)
+      if d == '' then break end
+      if d then got = got + #d end
+   end
+   check('pipe flood read with timeouts', got == 64 * 65536, got)
+   check('pipe flood exit', p:wait() == 0)
 end
 
 --------------------------------------------------------------------------
--- cleanup on collection
+-- waiting: wait(ms, sleepMs) and exitValue() look with waitid and never
+-- reap, so the answer stays the same however often it is asked for
+
+do
+   local function ms()
+      local sec, nsec = unix.clock_gettime(unix.CLOCK_MONOTONIC)
+      return sec * 1000 + nsec / 1e6
+   end
+
+   local p = assert(spawn.spawn(H('sleep', '5')))
+   check('exitValue is -1 while running', p:exitValue() == -1)
+   check('exitValue repeats', p:exitValue() == -1)
+   check('wait(0) is -1 while running', p:wait(0) == -1)
+   check('wait(0, 0) is exitValue', p:wait(0, 0) == -1)
+   local t0 = ms()
+   check('timed wait is -1 on timeout', p:wait(200, 20) == -1)
+   local waited = ms() - t0
+   check('timed wait waits for its timeout', waited >= 150 and waited < 3000, waited)
+   t0 = ms()
+   check('spinning wait is -1 on timeout', p:wait(100, 0) == -1)
+   waited = ms() - t0
+   check('spinning wait waits for its timeout', waited >= 80 and waited < 3000, waited)
+   t0 = ms()
+   check('wait with a long sleep is cut at the timeout', p:wait(100, 5000) == -1)
+   waited = ms() - t0
+   check('wait never sleeps past its timeout', waited >= 80 and waited < 2500, waited)
+   unix.kill(p.pid, unix.SIGKILL)
+   local code, sig = p:wait()
+   check('killed child reports 128 plus the signal', code == 128 + unix.SIGKILL and
+         sig == unix.SIGKILL, tostring(code) .. ' ' .. tostring(sig))
+   code, sig = p:exitValue()
+   check('exitValue repeats after exit', code == 128 + unix.SIGKILL and sig == unix.SIGKILL)
+   code, sig = p:wait(0, 0)
+   check('wait(0) repeats after exit', code == 128 + unix.SIGKILL and sig == unix.SIGKILL)
+   code, sig = p:wait(1000, 10)
+   check('timed wait repeats after exit', code == 128 + unix.SIGKILL and sig == unix.SIGKILL)
+
+   -- the child stays a zombie, so waiting never reaped it
+   if not WINDOWS and unix.stat('/proc/self/stat') then
+      local f = io.open('/proc/' .. p.pid .. '/stat')
+      local line = f and f:read('a')
+      if f then f:close() end
+      check('waiting leaves the zombie', line and line:match('^%d+ %b() (%a)') == 'Z', line)
+   end
+
+   -- a program that exits with 128 plus a signal is not that signal
+   p = assert(spawn.spawn(H('exit', '143')))
+   code, sig = p:wait()
+   check('real exit 143 has no signal', code == 143 and sig == nil, tostring(code) .. ' ' .. tostring(sig))
+
+   -- a blocking wait sleeps until the child is done
+   p = assert(spawn.spawn(H('sleep', '1')))
+   t0 = ms()
+   check('blocking wait returns the exit code', p:wait(-1) == 0)
+   waited = ms() - t0
+   check('blocking wait waited for the child', waited >= 700 and waited < 6000, waited)
+   check('wait with no arguments blocks too', assert(spawn.spawn(H('exit', '4'))):wait() == 4)
+
+   -- killed first, then waited for without a timeout, both while the
+   -- process is fresh and long after it died
+   p = assert(spawn.spawn(H('sleep', '60')))
+   unix.kill(p.pid, unix.SIGKILL)
+   t0 = ms()
+   code, sig = p:wait(-1)
+   check('wait right after a kill returns', code == 128 + unix.SIGKILL and sig == unix.SIGKILL,
+         tostring(code))
+   check('wait right after a kill is prompt', ms() - t0 < 5000, ms() - t0)
+   p = assert(spawn.spawn(H('sleep', '60')))
+   unix.kill(p.pid, unix.SIGKILL)
+   unix.nanosleep(0, 300 * 1000 * 1000)
+   t0 = ms()
+   code = p:wait(-1)
+   check('wait long after a kill returns', code == 128 + unix.SIGKILL, tostring(code))
+   check('wait long after a kill is prompt', ms() - t0 < 3000, ms() - t0)
+
+   raises('wait rejects text', function() p:wait('x') end, 'timeout must be')
+   raises('wait rejects nan', function() p:wait(0 / 0) end, 'timeout must be')
+   raises('wait rejects infinity', function() p:wait(math.huge) end, 'timeout must be')
+   raises('wait rejects text sleep', function() p:wait(1, 'x') end, 'sleepMs must be')
+   raises('wait rejects negative sleep', function() p:wait(1, -1) end, 'sleepMs must not')
+   raises('negative shutdownTimeout is rejected', function() spawn.spawn(H('exit', '0'), {shutdownTimeout = -1}) end, 'must not be negative')
+   raises('shutdownTimeout is a number', function() spawn.spawn(H('exit', '0'), {shutdownTimeout = 'x'}) end, 'shutdownTimeout must be')
+   raises('shutdownSleep is a number', function() spawn.spawn(H('exit', '0'), {shutdownSleep = 0 / 0}) end, 'shutdownSleep must be')
+   raises('the sleep option is gone', function() spawn.spawn(H('exit', '0'), {sleep = 20}) end, 'unknown option')
+   check('there is no kill', assert(spawn.spawn(H('exit', '0'))).kill == nil)
+
+   -- there is no wait on a pid that is not ours, which is what a copy of
+   -- the parent made by fork has
+   local p2 = assert(spawn.spawn(H('forkcopy'), {env = ENV, stdin = 'null'}))
+   local out = p2:readStdout()
+   check('fork copy sees its own errors', out:find('copy: raised not a child\n', 1, true) ~= nil, out)
+   check('fork copy left the child alone', out:find('parent: running\n', 1, true) ~= nil, out)
+   check('fork copy parent got the exit code', out:find('parent: exited 5\n', 1, true) ~= nil, out)
+   check('forkcopy exit', p2:wait() == 0)
+end
+
+--------------------------------------------------------------------------
+-- collection kills and reaps, politely first
+
+-- On Windows a signal 0 only finds the shared memory file a cosmo process
+-- leaves behind, which outlives it, and killing a dead process may report
+-- success under wine.  So there a process is alive if its heartbeat file is
+-- still changing.
+local function beat(pid)
+   local f = io.open(tmp .. '/hb-' .. pid)
+   local v = f and f:read('a')
+   if f then f:close() end
+   return v
+end
 
 local function alive(pid)
-   return unix.kill(pid, 0) == true
+   if not WINDOWS then return unix.kill(pid, 0) == true end
+   local a = beat(pid)
+   if a == nil then return false end
+   unix.nanosleep(0, 250 * 1000 * 1000)
+   return beat(pid) ~= a
+end
+
+local function ms()
+   local sec, nsec = unix.clock_gettime(unix.CLOCK_MONOTONIC)
+   return sec * 1000 + nsec / 1e6
+end
+
+local function gc()
+   collectgarbage() collectgarbage()
 end
 
 do
-   local pid
+   local pid, t0
    do
-      local p = assert(spawn.spawn(H('sleep', '60')))
+      local p = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
       pid = p.pid
+      unix.nanosleep(0, 400 * 1000 * 1000)
       check('child alive before gc', alive(pid))
    end
-   collectgarbage() collectgarbage()
-   local gone = false
-   for _ = 1, 150 do
-      local q = assert(spawn.spawn(H('exit', '0')))  -- sweeps orphans
-      q:wait()
-      if not alive(pid) then gone = true break end
-      unix.nanosleep(0, 20 * 1000 * 1000)
+   gc()
+   check('gc kills and reaps child at once', not alive(pid))
+
+   -- a child that exits by itself is reaped too
+   do
+      local p = assert(spawn.spawn(H('exit', '0')))
+      pid = p.pid
+      p:wait()
+      check('exited child is a zombie until gc', alive(pid) or WINDOWS)
    end
-   check('gc kills and reaps child', gone)
+   gc()
+   check('gc reaps an exited child', not alive(pid))
+
+   -- SIGTERM first, and the child gets to clean up
+   local marker = tmp .. '/graceful'
+   do
+      local p = assert(spawn.spawn(H('trapterm', marker),
+                                   {stdout = 'pipe', shutdownTimeout = 5000, env = HBENV}))
+      check('trapterm child is ready', p:readStdout(1, 20000) == 'r')
+      pid = p.pid
+   end
+   t0 = ms()
+   gc()
+   check('gc waited for the child to say goodbye', exists('graceful'))
+   check('gracefully ended child is gone', not alive(pid))
+   check('graceful gc did not use the whole timeout', ms() - t0 < 4500, ms() - t0)
+
+   -- ignoring SIGTERM costs the whole shutdown timeout, then SIGKILL
+   do
+      local p = assert(spawn.spawn(H('ignoreterm'), {stdout = 'pipe', shutdownTimeout = 300, env = HBENV}))
+      check('ignoreterm child is ready', p:readStdout(1, 20000) == 'r')
+      pid = p.pid
+   end
+   t0 = ms()
+   gc()
+   local took = ms() - t0
+   check('stubborn child is gone', not alive(pid))
+   check('stubborn child got its shutdown time', took >= 250, took)
+   check('stubborn child did not get much more', took < 4000, took)
+
+   -- the default timeout is short
+   do
+      local p = assert(spawn.spawn(H('ignoreterm'), {stdout = 'pipe', env = HBENV}))
+      check('default shutdownTimeoutMs', p.shutdownTimeoutMs == 10 and p.shutdownSleepMs == 10)
+      check('ignoreterm child is ready again', p:readStdout(1, 20000) == 'r')
+      pid = p.pid
+      p.shutdownTimeoutMs = 50
+   end
+   t0 = ms()
+   gc()
+   check('shutdown fields can be changed', not alive(pid) and ms() - t0 < 3000)
+
+   -- pipes close first, so a child blocked writing dies of the broken pipe
+   -- at once, instead of using up its shutdown time
+   do
+      local p = assert(spawn.spawn(H('pipeblock'), {stdout = 'pipe', shutdownTimeout = 20000, env = HBENV}))
+      check('pipeblock child is ready', p:readStdout(1, 20000) == 'r')
+      unix.nanosleep(0, 300 * 1000 * 1000)  -- let it fill the pipe
+      pid = p.pid
+   end
+   t0 = ms()
+   gc()
+   -- a child blocked in a write has no heartbeat to judge it by on Windows
+   if not WINDOWS then check('child blocked on a full pipe is gone', not alive(pid)) end
+   check('child blocked on a full pipe did not need the timeout', ms() - t0 < 10000, ms() - t0)
 end
 
 do
@@ -391,10 +529,30 @@ do
       local p = assert(spawn.spawn(H('exit', '0')))
       p:wait()
    end
-   collectgarbage() collectgarbage()
+   gc()
    local after = assert(unix.dup(0))
    unix.close(after)
    check('gc closes descriptors', after <= before + 1, after)
+end
+
+--------------------------------------------------------------------------
+-- spawn refuses to run where it cannot keep its promises
+
+for _, how in ipairs({'sigchld', 'sigterm', 'sighup', 'sigint'}) do
+   local p = assert(spawn.spawn(H('refuse', how), {env = ENV, stdin = 'null'}))
+   local out = p:readStdout()
+   check('refuse ' .. how .. ' exits', p:wait() == 0, out)
+   check('refuse ' .. how .. ' raises', out:find('raised ', 1, true) == 1 and
+         out:find('cosmo-spawn: ', 1, true) ~= nil, out)
+   check('refuse ' .. how .. ' says why', out:find(how == 'sigchld' and 'SIGCHLD is ignored'
+         or 'already has a handler', 1, true) ~= nil, out)
+end
+
+do
+   -- a C handler on SIGINT, which is what script mode has, is allowed
+   local p = assert(spawn.spawn(H('plainsigint'), {env = ENV, stdin = 'null'}))
+   check('plain script mode is accepted', p:readStdout() == 'ok\n')
+   p:wait()
 end
 
 --------------------------------------------------------------------------
@@ -405,7 +563,7 @@ end
 -- succeeds, which is reported and not counted as a failure.
 
 for _, mode in ipairs({'pledged', 'unveiled'}) do
-   local p = assert(spawn.spawn(H(mode), {env = unix.environ()}))
+   local p = assert(spawn.spawn(H(mode), {env = ENV}))
    local out = p:readStdout()
    local code = p:wait()
    if out:find('^blocked ') then
@@ -419,21 +577,126 @@ for _, mode in ipairs({'pledged', 'unveiled'}) do
 end
 
 --------------------------------------------------------------------------
--- children die when redbean shuts down, and shutdown does not block
+-- children die when redbean leaves, however it leaves
 
-do
-   local t0 = unix.clock_gettime()
-   local p = assert(spawn.spawn(H('pid'), {env = unix.environ(), stdin = 'null'}))
-   local pid = tonumber(p:readStdout())
-   p:wait()
-   check('grandchild pid reported', pid ~= nil)
-   local gone = false
+local function pids(p, n)
+   local out, text = {}, ''
+   local deadline = ms() + 30000
+   while ms() < deadline and select(2, text:gsub('\n', '')) < n do
+      local d = p:readStdout(100, 200)
+      if d == '' then break end
+      if d then text = text .. d end
+   end
+   for l in text:gmatch('[^\n]+') do out[#out + 1] = tonumber(l) end
+   return out
+end
+
+-- waits for every child to be running, so that a test that expects them
+-- to be gone afterwards cannot pass because they never started
+local function allup(list)
+   for _ = 1, 100 do
+      local up = true
+      for _, pid in ipairs(list) do if not alive(pid) then up = false end end
+      if up then return true end
+      unix.nanosleep(0, 100 * 1000 * 1000)
+   end
+   return false
+end
+
+local function allgone(list)
    for _ = 1, 150 do
-      if not alive(pid) then gone = true break end
+      local any = false
+      for _, pid in ipairs(list) do if alive(pid) then any = true end end
+      if not any then return true end
       unix.nanosleep(0, 20 * 1000 * 1000)
    end
-   check('shutdown kills child', gone)
-   check('shutdown does not block', unix.clock_gettime() - t0 < 30)
+   return false
+end
+
+for _, how in ipairs({'end', 'osexit', 'osexitclose', 'unixexit', 'error'}) do
+   local p = assert(spawn.spawn(H('parentexit', how),
+                                {env = ENV, stdin = 'null', stdout = 'pipe'}))
+   local list = pids(p, 1)
+   p:wait()
+   check('parent leaving by ' .. how .. ' reported its child', #list == 1)
+   check('child is killed when its parent leaves by ' .. how, allgone(list))
+   for _, pid in ipairs(list) do if alive(pid) then unix.kill(pid, unix.SIGKILL) end end
+end
+
+-- signals that would kill the script now close it first.  The status is
+-- 128 plus the signal, and a blocked wait, a timed wait loop and a read
+-- with a timeout all let the handler run
+local signals = {{'SIGTERM', unix.SIGTERM}, {'SIGINT', unix.SIGINT}}
+if not WINDOWS then signals[#signals + 1] = {'SIGHUP', unix.SIGHUP} end
+for _, sg in ipairs(signals) do
+   for _, mode in ipairs({'wait', 'timed', 'read', 'idle'}) do
+      local name = 'signal ' .. sg[1] .. ' during ' .. mode
+      local p = assert(spawn.spawn(H('signal', mode),
+                                   {env = ENV, stdin = 'null', stdout = 'pipe'}))
+      local list = pids(p, 1)
+      check(name .. ' reported its child', #list == 1)
+      check(name .. ' child is running', allup(list))
+      unix.kill(p.pid, sg[2])
+      local code = p:wait(30000, 20)
+      check(name .. ' ended the script with 128 plus the signal', code == 128 + sg[2], tostring(code))
+      check(name .. ' killed the child', allgone(list))
+      for _, pid in ipairs(list) do if alive(pid) then unix.kill(pid, unix.SIGKILL) end end
+   end
+end
+
+-- a signal that arrives while a collection is waiting out its child does
+-- not leave that child behind, the collection finishes first
+do
+   local p = assert(spawn.spawn(H('signal', 'gc'),
+                                {env = ENV, stdin = 'null', stdout = 'pipe'}))
+   local list = pids(p, 2)
+   check('gc signal test reported two children', #list == 2)
+   check('gc signal test children are running', allup(list))
+   unix.kill(p.pid, unix.SIGTERM)
+   local code = p:wait(60000, 20)
+   check('signal during collection ended the script', code == 128 + unix.SIGTERM, tostring(code))
+   check('signal during collection left no child', allgone(list))
+   for _, pid in ipairs(list) do if alive(pid) then unix.kill(pid, unix.SIGKILL) end end
+end
+
+-- SIGKILL cannot be handled, so there the child is orphaned.  That is
+-- the documented limit, and the test cleans up after it
+do
+   local p = assert(spawn.spawn(H('signal', 'wait'),
+                                {env = ENV, stdin = 'null', stdout = 'pipe'}))
+   local list = pids(p, 1)
+   check('orphan test child is running', allup(list))
+   unix.kill(p.pid, unix.SIGKILL)
+   p:wait()
+   unix.nanosleep(0, 300 * 1000 * 1000)
+   check('SIGKILL of the parent orphans the child, as documented', #list == 1 and alive(list[1]))
+   for _, pid in ipairs(list) do unix.kill(pid, unix.SIGKILL) end
+end
+
+--------------------------------------------------------------------------
+-- waiting must sleep in the kernel and not in a loop. os.clock counts only
+-- this process, so the child's own sleep costs nothing here. The bound is
+-- loose enough for emulators, a busy loop would use the whole wall time.
+
+do
+   local function cpu(label, opts, wait)
+      local p = assert(spawn.spawn(H('sleep', '2'), opts))
+      local c0, t0 = os.clock(), ms()
+      wait(p)
+      local wall, used = ms() - t0, (os.clock() - c0) * 1000
+      print(('cpu %-34s wall %5.0fms  cpu %6.1fms'):format(label, wall, used))
+      check('cpu ' .. label .. ' waited', wall >= 1500, wall)
+      check('cpu ' .. label .. ' sleeps in the kernel', used < wall * 0.25, used)
+      p:wait()
+   end
+   cpu('wait()', nil, function(p) p:wait() end)
+   cpu('wait(-1)', {stdout = 'pipe'}, function(p) p:wait(-1) end)
+   cpu('wait(10000, 50)', nil, function(p) p:wait(10000, 50) end)
+   cpu('wait(100) loop', nil, function(p) while p:wait(100) == -1 do end end)
+   cpu('readStdout()', {stdout = 'pipe'}, function(p) p:readStdout() end)
+   cpu('readStdout(1, 100) loop', {stdout = 'pipe'},
+       function(p) while p:readStdout(1, 100) == false do end end)
+   cpu('tmpfile readStdout()', nil, function(p) p:readStdout() end)
 end
 
 --------------------------------------------------------------------------

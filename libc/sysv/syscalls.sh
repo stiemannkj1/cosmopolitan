@@ -756,7 +756,7 @@ scall	sys_rtprio_thread	0xffffff1d2fffffff	0xfff	globl # no wrapper
 #scall	uuidgen			0x163fff188fffffff	0xfff	globl
 #scall	vadvise			0xffffff048fffffff	0xfff	globl
 #scall	wait			0xffffff054fffffff	0xfff	globl
-#scall	wait6			0x1e1fff214fffffff	0xfff	globl
+scall	sys_wait6		0x1e1fff214fffffff	0xfff	globl # FreeBSD+NetBSD, no wrapper
 #scall	yield			0xffffff141fffffff	0xfff	globl
 #──────────────────────────OPENBSD───────────────────────────────────────────
 #scall	__thrsleep		0xfff05effffffffff	0xfff	globl

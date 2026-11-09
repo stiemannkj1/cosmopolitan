@@ -2951,6 +2951,38 @@ UNIX MODULE
            end
         end
 
+  unix.waitid([pid:int[, options:int]])
+      ├─→ pid:int, code:int, status:int
+      └─→ nil, unix.Errno
+
+    Waits for a subprocess to terminate, optionally without harvesting
+    it. Unlike unix.wait() this can look at a child that has exited and
+    leave it waitable, if `unix.WNOWAIT` is in `options`. A later call
+    to unix.wait() or unix.waitid() without `WNOWAIT` then collects it.
+
+    `pid` works as it does for unix.wait(), `-1` (the default) means any
+    child, `pid > 0` a specific child, and `pid <= 0` a process group.
+    Process groups are not supported on Windows.
+
+    Options may have `WNOHANG`, which means don't block. If nothing has
+    happened yet, the returned `pid` is `0`. Options may also have
+    `WNOWAIT`. The waitid() `WEXITED` option is always on.
+
+    Returns the child's `pid`, a `code` that is `unix.CLD_EXITED` if the
+    child exited, `unix.CLD_KILLED` if a signal ended it or
+    `unix.CLD_DUMPED` if it also dumped core, and a `status` that is
+    the exit code for `CLD_EXITED` or the signal number otherwise.
+
+    If `pid` isn't a child of the caller, or was already reaped, then
+    `unix.ECHILD` is raised. OpenBSD has no way to look at a zombie, so
+    `unix.ENOSYS` is raised there.
+
+        pid, code, status = assert(unix.waitid(child, unix.WNOWAIT))
+        if code == unix.CLD_EXITED then
+           print('child', pid, 'exited with', status)
+        end
+        assert(unix.wait(child))  -- now reap it
+
   unix.WIFEXITED(wstatus:int)
       └─→ bool
 
@@ -6279,13 +6311,13 @@ COSMO-SPAWN MODULE
     killing the process. Children get the default SIGPIPE back, since
     posix_spawn() otherwise passes an ignored signal on to them.
 
-    This is meant for scripts, which is redbean -i. A redbean server
-    reaps every child it has with wait4(-1), so a process object kept
-    across a return to the event loop has its child stolen: p:wait()
-    then fails with ECHILD, and the pid may already be reused when
-    p:kill() or garbage collection signals it. Inside a server, spawn
-    and wait in the same handler call and drop the object before
-    returning.
+    This is meant for simple scripts, which is redbean -i. The first
+    spawn raises an error if SIGTERM or SIGHUP already has a handler, as
+    in a running redbean server, if SIGINT has a handler written in Lua,
+    or if SIGCHLD is ignored. Never set SIGCHLD to ignore in a script
+    that uses this module, since the kernel would then reap children
+    before they can be waited for. It also raises on OpenBSD, which has
+    no waitid().
 
   spawn.spawn(argv:List<str>[, opts:table])
       ├─→ process:userdata
@@ -6303,6 +6335,11 @@ COSMO-SPAWN MODULE
     - `stdin` is 'pipe' by default and may also be 'null' or 'inherit'.
     - `stdout` and `stderr` are 'tmpfile' by default and may also be
       'pipe', 'null' or 'inherit'. `stderr` may also be 'stdout'.
+    - `shutdownTimeout` is how many milliseconds a child that is still
+      running at garbage collection gets to exit after SIGTERM before it
+      is killed. Default is 10.
+    - `shutdownSleep` is how many milliseconds to sleep between looks
+      during that time. Default is 10.
 
     The 'tmpfile' default captures each stream into its own anonymous
     temporary file in $TMPDIR, so a child can write any amount without
@@ -6317,17 +6354,46 @@ COSMO-SPAWN MODULE
     no temporary file could be created, which includes a process that
     pledge() or unveil() leaves unable to create files.
 
+    Waiting never reaps the child and never signals it. It uses
+    waitid() with WNOWAIT, so the exit status stays available for as
+    long as the object lives and asking again is always safe. Waiting
+    does not read pipes either. A child that fills a stdout or stderr
+    pipe blocks until the script reads it, so a script that waits on a
+    child with pipes should read them while it waits, for example with
+    p:readStdout(n, timeout).
+
     When the returned object is garbage collected, which includes
-    shutdown, its file descriptors are closed and a running child is
-    sent SIGKILL. Neither step blocks. Shutdown cleanup runs when the Lua
-    state is closed, so it is skipped by unix.exit(), which is _Exit(),
-    and when redbean is killed by SIGKILL. Use os.exit() or kill the
-    child yourself in those cases.
+    shutdown, its pipes are closed first, so a child blocked writing to
+    one gets SIGPIPE. A child that is still running is then sent SIGTERM
+    and given `shutdownTimeout` milliseconds to exit, after which it is
+    sent SIGKILL. Finally it is reaped. Collection can therefore block
+    for up to `shutdownTimeout` milliseconds per child, which is why the
+    default is short. The exit signals SIGTERM, SIGHUP and SIGINT are
+    acted on at the next safe point of the script, never in the middle
+    of a collection, so one that arrives meanwhile is handled right
+    after it.
+
+    The child never outlives the script, short of SIGKILL. The first
+    spawn makes os.exit() and unix.exit() close the Lua state first,
+    which runs the collection of every process object, and installs
+    handlers for SIGTERM, SIGHUP and SIGINT that exit that way with
+    status 128 plus the signal. In a process made by fork() unix.exit()
+    is left alone. Nothing can run when Lua is killed by SIGKILL, by the
+    out of memory killer or by a crash, and the child is then orphaned.
+    A grandchild is never signaled.
 
   p.pid
       └─→ pid:int
 
-    The process id of the child.
+    The process id of the child. The object is the only thing that
+    signals or reaps it, so don't do either yourself.
+
+  p.shutdownTimeoutMs
+  p.shutdownSleepMs
+      └─→ ms:number
+
+    The `shutdownTimeout` and `shutdownSleep` options. They are plain
+    fields, so they may be changed while the child runs.
 
   p:writeStdin(data:str)
       ├─→ true
@@ -6345,9 +6411,10 @@ COSMO-SPAWN MODULE
     Closes the child's standard input so it sees end of file. Programs
     like sort and cat don't finish until this is called.
 
-  p:readStdout([n:int])
-  p:readStderr([n:int])
+  p:readStdout([n:int[, timeout:number]])
+  p:readStderr([n:int[, timeout:number]])
       ├─→ data:str
+      ├─→ false
       └─→ nil, message:str
 
     Reads standard output or standard error. Without `n` this reads to
@@ -6357,29 +6424,39 @@ COSMO-SPAWN MODULE
     file. Any other `n` raises an error. Fails if that stream wasn't
     captured.
 
-  p:wait([nohang:bool|timeout:number])
+    With `timeout`, in milliseconds, the call waits at most that long
+    for the first byte and returns false if none came. A negative
+    timeout waits forever and zero looks once. A timeout without `n`,
+    or one that is NaN or infinite, raises an error. This is how a
+    script waits on a child's output and its exit together, by reading
+    with a timeout in a loop and checking p:exitValue() between reads.
+
+  p:wait([timeout:number[, sleepMs:number]])
       ├─→ exitcode:int[, signal:int]
-      ├─→ false
+      ├─→ -1
       └─→ nil, unix.Errno
 
-    Waits for the child and returns its exit code. If it died from a
-    signal then the code is 128 plus the signal, and the signal is
-    returned second. If `nohang` is true then false is returned while
-    the child is still running. Each nohang poll also drains the output
-    pipes into memory, so polling in a loop can't deadlock a child that
-    writes a lot. If a number of milliseconds is passed instead, the call
-    sleeps in poll() for at most that long, waking as soon as the child
-    writes output or exits, and returns false if the time ran out first.
-    A negative or NaN timeout raises an error. On Windows a pipe is
-    noticed within 10 milliseconds of output arriving.
+    Waits for the child to stop, without reaping it. A negative
+    `timeout` in milliseconds, the default, blocks in waitid() until it
+    has. Zero looks once and doesn't block. A positive timeout looks
+    again every `sleepMs` milliseconds, 10 by default, until the child
+    has stopped or the time has passed. A `sleepMs` of 0 doesn't sleep.
+    NaN, infinite and negative `sleepMs` values raise an error.
 
-  p:kill([sig:int])
-      ├─→ true
-      ├─→ false
+    Returns the exit code, or -1 if the child is still running. If it
+    died from a signal then the code is 128 plus the signal, and the
+    signal is returned second, so a child that really exited with 143
+    can be told from one killed by SIGTERM. The status stays available,
+    so every later call returns the same answer. Raises an error if the
+    process is not a child of this one, which is what an object
+    inherited by a process made with fork() is.
+
+  p:exitValue()
+      ├─→ exitcode:int[, signal:int]
+      ├─→ -1
       └─→ nil, unix.Errno
 
-    Sends a signal, SIGTERM by default. Returns false if the child was
-    already reaped.
+    A single look, exactly p:wait(0, 0).
 
 ────────────────────────────────────────────────────────────────────────────────
 JSON MODULE

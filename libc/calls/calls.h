@@ -174,6 +174,8 @@ int usleep(uint64_t) libcesque;
 int vfork(void) libcesque returnstwice;
 int wait(int *) libcesque __write_only(1);
 int waitpid(int, int *, int) libcesque __write_only(2);
+struct siginfo;
+int waitid(int, unsigned, struct siginfo *, int) libcesque __write_only(3);
 int64_t clock(void) libcesque;
 int64_t time(int64_t *) libcesque __write_only(1);
 ssize_t copy_file_range(int, long *, int, long *, size_t, unsigned) libcesque __read_write(2) __read_write(4);

@@ -299,22 +299,8 @@ textwindows static int sys_poll_nt_actual(struct pollfd *fds, uint64_t nfds,
               fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
               break;
           }
-        } else if (GetFileType(filehands[wi]) == kNtFileTypePipe) {
-          if ((fds[fi].events & POLLRDNORM_) &&
-              (g_fds.p[fds[fi].fd].flags & O_ACCMODE) != O_WRONLY) {
-            if (PeekNamedPipe(filehands[wi], 0, 0, 0, &avail, 0)) {
-              if (avail)
-                fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
-            } else if (GetLastError() == kNtErrorHandleEof ||
-                       GetLastError() == kNtErrorBrokenPipe) {
-              fds[fi].revents = POLLHUP_;
-            } else {
-              fds[fi].revents = POLLERR_;
-            }
-          } else {
-            fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
-          }
         } else {
+          // pipes never get here, they aren't in the wait set above
           fds[fi].revents = fds[fi].events & (POLLRDNORM_ | POLLWRNORM_);
         }
         rc += !!fds[fi].revents;
