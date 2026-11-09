@@ -147,6 +147,7 @@ elseif mode == 'forkcopy' then
       local what = ok and 'returned' or (tostring(err):find('not a child', 1, true)
                                          and 'raised not a child' or 'raised ' .. tostring(err))
       io.stdout:write('copy: ', what, '\n')
+      io.stdout:write('copy: close returned ', select('#', p:close()), ' values\n')
       io.stdout:flush()
       os.exit(0, true)  -- finalizes the copy, which must not touch the child
    end

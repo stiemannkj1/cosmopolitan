@@ -51,11 +51,15 @@
      script that waits on a child with pipes reads them while it waits, for
      example with p:readStdout(n, timeout).
 
-     The child never outlives the script, short of SIGKILL.  When the
-     object is collected, which also happens when the Lua state is closed
-     at shutdown, its pipes are closed, and a child that is still running
+     The child never outlives the script, short of SIGKILL.  The process
+     is cleaned up by p:close(), when a variable declared with <close> goes
+     out of scope, or when the object is garbage collected, which also
+     happens when the Lua state is closed at shutdown, whichever comes
+     first.  Cleanup closes its pipes, and a child that is still running
      is sent SIGTERM, given shutdownTimeout milliseconds to exit, and then
-     killed with SIGKILL, and finally reaped.  The first spawn also makes
+     killed with SIGKILL, and finally reaped.  It runs once and later
+     calls do nothing, so closing early is safe.  After it, every method
+     but close raises an error, so read the output first.  The first spawn also makes
      os.exit and unix.exit close the Lua state first, and installs handlers
      for SIGTERM, SIGHUP and SIGINT that exit that way, at the next safe
      point of the script, so those signals clean up too.  Nothing can run when
@@ -85,6 +89,9 @@
      p:readStderr([n[, ms]])  same, for standard error
      p:wait([ms[, sleepMs]])  exit status, see below
      p:exitValue()        p:wait(0, 0), a single look
+     p:close()            cleans up now, returns the exit code and signal
+                          the child had at the end, or nothing if closed
+                          before or if it is not our child
 
      p:readStdout(n, ms) waits up to ms milliseconds for data.  A negative
      ms waits forever and zero looks once.  It returns the data, an empty
@@ -168,6 +175,12 @@ end
 -- line that called it.
 local function fail(msg, depth)
    error('cosmo-spawn: ' .. msg, (depth or 1) + 2)
+end
+
+-- every method but close refuses a process that was closed.  depth counts
+-- frames from checkopen's caller up to the function the user called
+local function checkopen(self, depth)
+   if self.closed then fail('process is closed', (depth or 1) + 1) end
 end
 
 local function checkstring(s, what, depth)
@@ -542,6 +555,7 @@ local function readfile(self, name, n, timeout)
 end
 
 local function readstream(self, name, n, timeout)
+   checkopen(self, 2)
    if not self.piped[name] then
       return nil, (name == 'out' and 'stdout' or 'stderr') .. ' is not captured'
    end
@@ -583,6 +597,7 @@ function Process:readStdout(n, timeout) return readstream(self, 'out', n, timeou
 function Process:readStderr(n, timeout) return readstream(self, 'err', n, timeout) end
 
 function Process:writeStdin(s)
+   checkopen(self)
    checkstring(s, 'data')
    if not self.piped['in'] then return nil, 'stdin is not a pipe' end
    local off = 1
@@ -608,6 +623,7 @@ function Process:writeStdin(s)
 end
 
 function Process:closeStdin()
+   checkopen(self)
    local fd = self.fds['in']
    if fd then
       unix.close(fd)
@@ -626,6 +642,7 @@ end
 
 -- Waits with waitid, which looks at the exit without collecting it.
 function Process:wait(timeout, sleepMs)
+   checkopen(self)
    if timeout == nil then timeout = -1 end
    checkms(timeout, 'timeout', 1)
    if sleepMs == nil then sleepMs = 10 end
@@ -643,19 +660,39 @@ function Process:wait(timeout, sleepMs)
 end
 
 function Process:exitValue()
+   checkopen(self)
    return finish(look(self, WNOHANG, 2))
 end
 
--- Collection.  Closes the pipes first, so a child blocked writing to one
--- gets SIGPIPE, then makes sure the child is gone and reaped.  Nothing is
--- signaled unless waitid says the process is our own child and still
--- running, which keeps a copy made by fork harmless.  Lua runs a finalizer
--- once per object, also from lua_close, so no state is kept.
-Process.__gc = function(self)
+-- Cleanup, run by p:close(), by the to-be-closed variable going out of
+-- scope, and by collection, whichever comes first.  It closes the pipes
+-- first, so a child blocked writing to one gets SIGPIPE, then makes sure the
+-- child is gone and reaped.  Nothing is signaled unless waitid says the
+-- process is our own child and still running, which keeps a copy made by
+-- fork harmless.  The closed flag makes every later call a no-op, which
+-- matters because a reaped pid may already belong to another child.  Lua
+-- runs one thread, and the exit signals only arm a hook that runs between
+-- instructions, so a plain boolean is enough.  Returns the exit code and
+-- the signal, as wait does, or nothing if there is no status to report.
+local function stopped_within(self, ms, sleepms)
+   local deadline = monotonic_ms() + ms
+   while true do
+      -- a failed look counts as stopped, there is nothing more to wait for
+      if look(self, WNOHANG, 2) ~= nil then return true end
+      local remaining = deadline - monotonic_ms()
+      if remaining <= 0 then return false end
+      sleep_ms(math.min(sleepms, remaining))
+   end
+end
+
+local function cleanup(self)
+   if self.closed then return end
+   self.closed = true
    for name, fd in pairs(self.fds) do
       unix.close(fd)
       self.fds[name] = nil
    end
+   local rcode, rsig
    pcall(function()
       local pid
       repeat
@@ -665,20 +702,35 @@ Process.__gc = function(self)
       until pid ~= nil
       if pid == 0 then
          unix.kill(self.pid, SIGTERM)
-         if self:wait(self.shutdownTimeoutMs, self.shutdownSleepMs) == -1 then
+         if not stopped_within(self, self.shutdownTimeoutMs, self.shutdownSleepMs) then
             unix.kill(self.pid, SIGKILL)
-            self:wait()
+            look(self, 0, 2)
          end
       end
+      local code, status
       repeat
          local err
-         pid, err = unix.waitid(self.pid)
+         pid, code, status = unix.waitid(self.pid)
+         if pid == nil then err = code end
       until pid ~= nil or err:errno() ~= EINTR
+      if pid ~= nil and pid ~= 0 then
+         if code == CLD_EXITED then
+            rcode = status
+         else
+            rcode, rsig = 128 + status, status
+         end
+      end
    end)
    for name, st in pairs(self.files) do
       unix.close(st.fd)
       self.files[name] = nil
    end
+   if rcode == nil then return end
+   return rcode, rsig
 end
+
+function Process:close() return cleanup(self) end
+Process.__close = function(self) cleanup(self) end
+Process.__gc = function(self) cleanup(self) end
 
 return spawn

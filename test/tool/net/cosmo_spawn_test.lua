@@ -411,6 +411,7 @@ do
    local p2 = assert(spawn.spawn(H('forkcopy'), {env = ENV, stdin = 'null'}))
    local out = p2:readStdout()
    check('fork copy sees its own errors', out:find('copy: raised not a child\n', 1, true) ~= nil, out)
+   check('fork copy close reports nothing', out:find('copy: close returned 0 values\n', 1, true) ~= nil, out)
    check('fork copy left the child alone', out:find('parent: running\n', 1, true) ~= nil, out)
    check('fork copy parent got the exit code', out:find('parent: exited 5\n', 1, true) ~= nil, out)
    check('forkcopy exit', p2:wait() == 0)
@@ -533,6 +534,101 @@ do
    local after = assert(unix.dup(0))
    unix.close(after)
    check('gc closes descriptors', after <= before + 1, after)
+end
+
+--------------------------------------------------------------------------
+-- close, <close> and the closed flag
+
+do
+   local t0
+   -- a child that already exited, closed after reading its output
+   local p = assert(spawn.spawn(H('exit', '4')))
+   check('closed starts false', p.closed == nil or p.closed == false)
+   check('read before close', p:readStdout() == '')
+   local code, sig = p:close()
+   check('close returns the exit code', code == 4 and sig == nil, tostring(code) .. ' ' .. tostring(sig))
+   check('closed is set', p.closed == true)
+   check('second close does nothing', select('#', p:close()) == 0)
+
+   -- every other method refuses a closed process
+   for name, f in pairs({
+      wait = function() p:wait() end, exitValue = function() p:exitValue() end,
+      readStdout = function() p:readStdout() end, readStderr = function() p:readStderr(1) end,
+      writeStdin = function() p:writeStdin('x') end, closeStdin = function() p:closeStdin() end}) do
+      raises(name .. ' after close raises', f, 'process is closed')
+   end
+
+   -- a child that is still running is stopped, and its status reported
+   p = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
+   local pid = p.pid
+   unix.nanosleep(0, 400 * 1000 * 1000)
+   check('child runs before close', alive(pid))
+   t0 = ms()
+   code, sig = p:close()
+   check('close stopped the child', not alive(pid))
+   if WINDOWS then
+      check('close of a running child reports a failure', code ~= nil and code ~= 0, tostring(code))
+   else
+      check('close of a running child reports SIGTERM', code == 128 + unix.SIGTERM and
+            sig == unix.SIGTERM, tostring(code) .. ' ' .. tostring(sig))
+   end
+   check('close of a running child was quick', ms() - t0 < 5000, ms() - t0)
+
+   -- a child that ignores SIGTERM gets the timeout and then SIGKILL
+   p = assert(spawn.spawn(H('ignoreterm'), {stdout = 'pipe', shutdownTimeout = 200, env = HBENV}))
+   check('stubborn child is ready', p:readStdout(1, 20000) == 'r')
+   pid = p.pid
+   code, sig = p:close()
+   check('stubborn child is gone after close', not alive(pid))
+   if not WINDOWS then
+      check('stubborn child reports SIGKILL', code == 128 + unix.SIGKILL and sig == unix.SIGKILL,
+            tostring(code) .. ' ' .. tostring(sig))
+   end
+
+   -- a to-be-closed variable cleans up at the end of its scope
+   do
+      local q <close> = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
+      pid = q.pid
+      unix.nanosleep(0, 400 * 1000 * 1000)
+      check('scoped child runs inside the scope', alive(pid))
+   end
+   check('scoped child is gone after the scope', not alive(pid))
+
+   -- also when the scope is left by an error
+   local ok = pcall(function()
+      local q <close> = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
+      pid = q.pid
+      unix.nanosleep(0, 400 * 1000 * 1000)
+      error('leaving')
+   end)
+   check('the error got out', not ok)
+   check('scoped child is gone after an error', not alive(pid))
+
+   -- once closed, collection must leave the pid alone, since by then it
+   -- may belong to another child.  Point a closed object at a live one and
+   -- collect it
+   local decoy = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
+   unix.nanosleep(0, 400 * 1000 * 1000)
+   do
+      local r = assert(spawn.spawn(H('exit', '0')))
+      r:close()
+      r.pid = decoy.pid
+   end
+   gc()
+   check('collecting a closed object does not touch another process', alive(decoy.pid))
+   check('and the other process is still ours', decoy:exitValue() == -1)
+   decoy:close()
+   check('decoy closes', not alive(decoy.pid))
+
+   -- closing then collecting is the same as closing
+   do
+      local q = assert(spawn.spawn(H('sleep', '60'), {env = HBENV}))
+      pid = q.pid
+      unix.nanosleep(0, 400 * 1000 * 1000)
+      q:close()
+   end
+   gc()
+   check('close then collection leaves nothing behind', not alive(pid))
 end
 
 --------------------------------------------------------------------------

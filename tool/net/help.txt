@@ -6362,8 +6362,9 @@ COSMO-SPAWN MODULE
     child with pipes should read them while it waits, for example with
     p:readStdout(n, timeout).
 
-    When the returned object is garbage collected, which includes
-    shutdown, its pipes are closed first, so a child blocked writing to
+    When the returned object is closed with p:close() or a `<close>`
+    variable, or garbage collected, which includes shutdown, whichever
+    comes first, its pipes are closed first, so a child blocked writing to
     one gets SIGPIPE. A child that is still running is then sent SIGTERM
     and given `shutdownTimeout` milliseconds to exit, after which it is
     sent SIGKILL. Finally it is reaped. Collection can therefore block
@@ -6457,6 +6458,29 @@ COSMO-SPAWN MODULE
       └─→ nil, unix.Errno
 
     A single look, exactly p:wait(0, 0).
+
+  p:close()
+      ├─→ exitcode:int[, signal:int]
+      └─→ nothing
+
+    Cleans up the process now, which is also what happens when a variable
+    declared with `<close>` goes out of scope and when the object is
+    garbage collected, whichever comes first. The pipes are closed, a
+    child that is still running is sent SIGTERM, given `shutdownTimeout`
+    milliseconds, then sent SIGKILL, and the child is reaped. Returns the
+    exit code and signal as p:wait() does, with the code of the SIGTERM or
+    SIGKILL death if the child had to be stopped. Returns nothing if the
+    process was already closed or is not a child of this one, which is
+    what an object inherited by a process made with fork() is. Cleanup
+    runs only once, so closing early is safe, and every other method
+    raises an error after it, so read the output first.
+
+        do
+           local p <close> = assert(spawn.spawn({'sort'}, {search = true}))
+           p:writeStdin('b\na\n')
+           p:closeStdin()
+           print(p:readStdout())
+        end  -- the child is reaped here
 
 ────────────────────────────────────────────────────────────────────────────────
 JSON MODULE
